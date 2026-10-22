@@ -12,10 +12,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # 不写死 -G：runner 镜像的 Visual Studio 版本会变，
+      # 让 CMake 自动选择当前机器上最新的 VS 生成器。
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build
 
       - name: Build
         run: cmake --build build --config Debug
