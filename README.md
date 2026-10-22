@@ -5,10 +5,8 @@
 > 目标不是再造一个 RocksDB，而是把一个存储引擎该有的部件完整走一遍：
 > WAL 崩溃恢复、MemTable、分层 SSTable、布隆过滤器、Compaction、压测与量化。
 
-<!--
-CI 徽章：把 <owner>/<repo> 替换成实际仓库地址后取消注释
-[![CI](https://github.com/<owner>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/ci.yml)
--->
+<!-- 徽章指向实际仓库 -->
+[![CI](https://github.com/CoRadll/minikv/actions/workflows/ci.yml/badge.svg)](https://github.com/CoRadll/minikv/actions/workflows/ci.yml)
 
 ## 状态
 
