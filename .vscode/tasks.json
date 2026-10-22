@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cmake: configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["-S", ".", "-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64"],
+      "problemMatcher": []
+    },
+    {
+      "label": "cmake: build (Debug)",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "build", "--config", "Debug"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$msCompile"]
+    },
+    {
+      "label": "cmake: test (Debug)",
+      "type": "shell",
+      "command": "ctest",
+      "args": ["--test-dir", "build", "-C", "Debug", "--output-on-failure"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

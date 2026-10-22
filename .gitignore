@@ -1,0 +1,35 @@
+# ===== 构建产物 =====
+build/
+out/
+obj/
+bin/
+lib/
+
+# ===== IDE =====
+.vs/
+.vscode/ipch/
+*.user
+*.suo
+
+# ===== 编译器中间产物 =====
+*.pdb
+*.ilk
+*.obj
+*.idb
+*.tlog
+
+# ===== 本地运行数据 =====
+data/
+
+# ===== 存储引擎运行时产物 =====
+*.sst
+*.log
+*.manifest
+
+# ===== 测试与压测临时产物 =====
+benchmarks/raw/
+*.csv
+
+# ===== 系统 =====
+Thumbs.db
+.DS_Store
