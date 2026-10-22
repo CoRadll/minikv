@@ -72,7 +72,19 @@
 
 ## 构建
 
-环境要求：CMake ≥ 3.20、支持 C++20 的编译器（Windows 上已验证 MSVC 19.34 / VS 2022）。
+环境要求：CMake ≥ 3.20（使用预设文件需 ≥ 3.21）、支持 C++20 的编译器
+（Windows 上已验证 MSVC 19.34 / VS 2022）。
+
+### 推荐：用预设
+
+```powershell
+cmake --preset msvc
+cmake --build --preset debug
+ctest --preset debug
+.\build\bin\Debug\minikv.exe
+```
+
+### 或不依赖预设（任何平台通用）
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -80,6 +92,16 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 .\build\bin\Debug\minikv.exe
 ```
+
+### 可选项
+
+| 选项 | 默认 | 作用 |
+|---|---|---|
+| `MINIKV_WARNINGS_AS_ERRORS` | OFF | 把警告当错误，适合 CI 与提交前自检 |
+| `MINIKV_ENABLE_ASAN` | OFF | 启用 AddressSanitizer；MSVC 需先在 VS Installer 安装「C++ AddressSanitizer」组件 |
+
+所有构建选项都以 `PRIVATE` 方式施加在本项目 target 上，链接 `minikv_core` 的下游项目
+不会被迫继承警告等级或 sanitizer 运行时。
 
 ## 目录
 
