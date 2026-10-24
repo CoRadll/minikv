@@ -1,5 +1,6 @@
 # ===== 构建产物 =====
 build/
+build-asan/
 out/
 obj/
 bin/
@@ -33,3 +34,11 @@ benchmarks/raw/
 # ===== 系统 =====
 Thumbs.db
 .DS_Store
+
+# ===== 阶段演示产物 =====
+demo-data/
+demo/
+
+# ===== 测试回退目录（系统临时目录不可用时产生） =====
+.minikv-test-tmp/
+

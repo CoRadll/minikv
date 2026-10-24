@@ -93,8 +93,14 @@ minikv_set_sanitizers(minikv)
 # ---------------------------------------------------------------------------
 enable_testing()
 
-add_executable(minikv_tests tests/unit/smoke_test.cc)
+add_executable(minikv_tests
+  tests/support/test_main.cpp
+  tests/unit/smoke_test.cc
+  tests/unit/util/status_test.cc
+  tests/unit/util/logging_test.cc)
 target_link_libraries(minikv_tests PRIVATE minikv_core)
+# 让测试可以用 "support/test_framework.h" 这样的路径引用测试基建
+target_include_directories(minikv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 minikv_set_warnings(minikv_tests)
 minikv_set_sanitizers(minikv_tests)
 

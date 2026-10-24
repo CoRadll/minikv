@@ -10,14 +10,17 @@
 
 ## 状态
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| S0 | 工程骨架、构建系统、目录同构检查 | ✅ 已完成 |
-| S1 | WAL + MemTable + 崩溃恢复 | 🚧 进行中 |
-| S2 | SSTable 落盘、Manifest、启动加载 | ⬜ 待开始 |
-| S3 | Compaction 与版本切换 | ⬜ 待开始 |
-| S4 | 布隆过滤器、块缓存、Scan 归并 | ⬜ 待开始 |
-| S5 | 对外接口、压测工具、崩溃测试 | ⬜ 待开始 |
+每个阶段结束时提供一个可执行的现场演示：`minikv.exe demo sN`，输出确定性 transcript 并落盘。
+规格见 [docs/demo-spec.md](docs/demo-spec.md)。
+
+| 阶段 | 内容 | 演示 | 状态 |
+|---|---|---|---|
+| S0 | 工程骨架、构建系统、目录同构检查 | `minikv --version` + 布局检查 | ✅ 已完成 |
+| S1 | WAL + MemTable + 崩溃恢复 | `demo s1`：写入→读→删→重启回放→坏尾截断 | 🚧 进行中 |
+| S2 | SSTable 落盘、Manifest、启动加载 | `demo s2`：阈值触发刷盘→重启从 SSTable 读 | ⬜ 待开始 |
+| S3 | Compaction 与版本切换 | `demo s3`：合并前后文件数与大小对比 | ⬜ 待开始 |
+| S4 | 布隆过滤器、块缓存、Scan 归并 | `demo s4`：布隆过滤器挡掉的读盘次数 | ⬜ 待开始 |
+| S5 | 对外接口、压测工具、崩溃测试 | `demo s5`：真实 kill -9 恢复 + bench 数字 | ⬜ 待开始 |
 
 ## 特性（目标）
 
@@ -102,6 +105,23 @@ ctest --test-dir build -C Debug --output-on-failure
 
 所有构建选项都以 `PRIVATE` 方式施加在本项目 target 上，链接 `minikv_core` 的下游项目
 不会被迫继承警告等级或 sanitizer 运行时。
+
+### 脚本（Windows）
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts\build.cmd [-Config Debug\|Release\|RelWithDebInfo] [-Clean] [-Asan]` | 配置 + 构建 |
+| `scripts\test.cmd [-Config ...] [-Build] [-SkipLayout] [-Filter <regex>]` | 同构检查 + ctest |
+| `scripts\check_layout.cmd` | 只跑 `include/` 与 `src/` 的同构检查 |
+
+`.cmd` 是 PowerShell 脚本的包装器：`.cmd` 不受 ExecutionPolicy 限制，在默认
+`Restricted` 策略的机器上可直接调用。脚本本体为**纯 ASCII**——Windows PowerShell 5.1
+会把无 BOM 的脚本按 ANSI 解码，中文会变成语法错误（见 ADR D-006）。
+
+测试的临时目录按 `MINIKV_TEST_TMPDIR` → 系统临时目录 → 当前工作目录 的顺序回退。
+若 `%TEMP%` 对可执行文件不可写（受限沙箱、安全软件拦截等），用
+`setx MINIKV_TEST_TMPDIR "<项目目录>\.minikv-test-tmp"` 指定一个**确认可写**的目录；
+在受限环境里该目录通常需要位于项目工作区之内。
 
 ## 目录
 

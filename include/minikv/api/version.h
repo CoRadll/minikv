@@ -8,6 +8,6 @@ namespace minikv {
 // 属于「include 与 src 同构」规则里允许的「纯定义」例外，
 // 例外名单登记在 scripts/check_layout.ps1。
 inline constexpr std::string_view kProjectName = "minikv";
-inline constexpr std::string_view kVersion = "0.1.1";
+inline constexpr std::string_view kVersion = "0.1.0";
 
 }  // namespace minikv
