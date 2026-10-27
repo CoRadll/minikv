@@ -210,3 +210,31 @@ UTF-8 的中文字节被按 GBK 解码后，若某个字节被解释为行尾反
 - 后续阶段（S2 写 SSTable、S5 崩溃测试）的数据目录同样要放在工作区内，
   演示脚本统一使用 `demo-data/` 相对路径
 - 代价是多了一层配置，且有环境相关的行为差异
+
+---
+
+## D-009 文件系统 API 的两个平台陷阱
+
+**背景**：`util/env` 封装目录操作，需要同时在 Windows 与 POSIX 上语义一致。
+
+**问题**：实现过程中撞到两个 Windows 特有的坑。
+
+1. **`DeleteFile` 是 Windows 宏**。`windows.h` 会把 `DeleteFile` 定义成
+   `DeleteFileW`/`DeleteFileA`。在含 `windows.h` 的翻译单元里，函数**定义**
+   被宏改名，而其他翻译单元看到的仍是 `DeleteFile`，最终表现为
+   `LNK2019: 无法解析的外部符号 minikv::DeleteFile`——声明明明存在，链接却找不到。
+2. **目录刷盘不可行**。对目录句柄调用 `FlushFileBuffers` 通常返回
+   `ERROR_ACCESS_DENIED`，NTFS 不支持这种用法。
+
+**决定**：
+- API 改名为 `RemoveFile`，从源头避开宏冲突；头文件里注明原因
+- `SyncDir` 在 Windows 上尽力而为：打不开或不支持时记 DEBUG 并返回 OK，
+  不让上层失败；目录项的一致性改由 `RenameFile` 的
+  `MOVEFILE_WRITE_THROUGH` 保证
+- POSIX 侧保持标准语义：`open(dir, O_RDONLY|O_DIRECTORY)` + `fsync`
+
+**后果**：
+- 公共接口不依赖平台头文件是否被包含，任何顺序包含都不会冲突
+- Windows 上的“目录已落盘”是弱保证（与 SQLite 等项目的取舍一致），
+  文档中已写明；需要强一致时依赖重命名的写入穿透语义
+- 排查时间成本很高（LNK2019 与声明无关），值得记录
