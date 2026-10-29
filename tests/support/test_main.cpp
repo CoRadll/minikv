@@ -9,6 +9,8 @@
 
 #include "support/test_framework.h"
 
+#include "minikv/util/logging.h"
+
 namespace minikv {
 namespace test {
 namespace {
@@ -129,6 +131,10 @@ int RunAll(int argc, char** argv) {
     std::printf("unknown argument: %s\n", std::string(arg).c_str());
     return 2;
   }
+
+  // 测试期间默认只显示 ERROR：引擎打开/回放会打 INFO，属正常噪声，
+  // 需要验证日志行为的用例（Logging.*）会自行设置并恢复级别。
+  minikv::SetLogLevel(minikv::LogLevel::kError);
 
   const auto start = std::chrono::steady_clock::now();
   for (const TestCase& test_case : Registry()) {

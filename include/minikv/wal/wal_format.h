@@ -24,6 +24,11 @@ struct WalRecord {
 // crc32 覆盖 type 及其之后的全部字节。
 inline constexpr std::size_t kRecordHeaderSize = 13;
 
+// 单条记录的字段上限（格式层与 Engine 层共用）。
+// key 要进内存索引，value 不能无限大以免一次写入吃掉全部内存。
+inline constexpr std::size_t kMaxKeySize = 1u << 10;      // 1 KB
+inline constexpr std::size_t kMaxValueSize = 64u << 20;   // 64 MB
+
 void EncodeRecord(const WalRecord& record, std::string* dst);
 
 // 解析一条记录。成功返回 true 并写入 *consumed（本条记录占用的字节数）；

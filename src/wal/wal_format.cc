@@ -17,11 +17,6 @@ constexpr std::size_t kTypeOffset = 4;
 constexpr std::size_t kKeyLengthOffset = 5;
 constexpr std::size_t kValueLengthOffset = 9;
 
-// 与 Options 层的限制保持一致：key 1KB、value 64MB。
-// 在格式层先挡住，避免坏数据把上层拖进巨大的内存分配。
-constexpr std::size_t kMaxKeySize = 1u << 10;
-constexpr std::size_t kMaxValueSize = 64u << 20;
-
 bool IsValidType(std::uint8_t type) {
   return type == static_cast<std::uint8_t>(RecordType::kPut) ||
          type == static_cast<std::uint8_t>(RecordType::kDelete);
