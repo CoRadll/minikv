@@ -103,7 +103,8 @@ add_executable(minikv_tests
   tests/unit/util/file_test.cc
   tests/unit/util/env_test.cc
   tests/unit/wal/wal_format_test.cc
-  tests/unit/wal/wal_writer_test.cc)
+  tests/unit/wal/wal_writer_test.cc
+  tests/unit/wal/wal_reader_test.cc)
 target_link_libraries(minikv_tests PRIVATE minikv_core)
 # 让测试可以用 "support/test_framework.h" 这样的路径引用测试基建
 target_include_directories(minikv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
