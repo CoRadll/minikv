@@ -225,6 +225,28 @@ TEST(Engine, ReopenTruncatesGarbageTail) {
   CHECK_EQ(size_after, valid_size);
 }
 
+TEST(Engine, StatsReflectCurrentState) {
+  minikv::test::TempDir dir;
+  REQUIRE_TRUE(dir.ok());
+
+  std::unique_ptr<minikv::Engine> engine;
+  REQUIRE_OK(minikv::Engine::Open(MakeOptions(dir / "db"), &engine));
+
+  const minikv::EngineStats empty_stats = engine->GetStats();
+  CHECK_EQ(empty_stats.wal_bytes, static_cast<std::uint64_t>(0));
+  CHECK_EQ(empty_stats.memtable_entries, static_cast<std::size_t>(0));
+
+  REQUIRE_OK(engine->Put("a", "1"));
+  REQUIRE_OK(engine->Put("b", "22"));
+
+  const minikv::EngineStats stats = engine->GetStats();
+  CHECK_EQ(stats.memtable_entries, static_cast<std::size_t>(2));
+  CHECK_TRUE(stats.wal_bytes > 0);
+  CHECK_TRUE(stats.memtable_bytes > 0);
+
+  CHECK_OK(engine->Close());
+}
+
 TEST(Engine, ConcurrentPutsAreAllPersisted) {
   minikv::test::TempDir dir;
   REQUIRE_TRUE(dir.ok());

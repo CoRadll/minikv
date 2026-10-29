@@ -147,6 +147,18 @@ class EngineImpl : public Engine {
     return nullptr;
   }
 
+  EngineStats GetStats() const override {
+    EngineStats stats;
+    if (wal_) {
+      stats.wal_bytes = wal_->size();
+    }
+    if (memtable_) {
+      stats.memtable_entries = memtable_->EntryCount();
+      stats.memtable_bytes = memtable_->ApproximateSize();
+    }
+    return stats;
+  }
+
   Status Close() override {
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (closed_) {

@@ -96,8 +96,42 @@ ctest --test-dir build -C Debug --output-on-failure
 .\build\bin\Debug\minikv.exe
 ```
 
-### 可选项
+### 命令行
 
+```powershell
+.\build\bin\Debug\minikv.exe --dir .\data
+```
+
+```
+minikv> put user:1 zhangsan
+OK
+minikv> get user:1
+"zhangsan"
+minikv> del user:1
+OK
+minikv> get user:1
+NOT FOUND
+minikv> stats
+db path        : .\data
+wal bytes      : 91
+memtable       : 2 entries, 80 bytes (approx)
+minikv> exit
+```
+
+| 命令 | 作用 |
+|---|---|
+| `put <key> <value>` | 写入或覆盖（value 可含空格） |
+| `get <key>` | 读取；不存在时打印 `NOT FOUND` |
+| `del <key>` | 删除（写墓碑） |
+| `stats` | 打印 WAL 字节数与内存表条目 |
+| `help` / `exit` | 帮助 / 退出 |
+
+启动参数：`--dir <path>` 指定数据目录（默认 `data`），`--verbose` 打开 INFO 级日志，
+`--version` 打印版本。
+
+数据在进程退出后由 WAL 保留，重新启动会自动回放。
+
+### 可选项
 | 选项 | 默认 | 作用 |
 |---|---|---|
 | `MINIKV_WARNINGS_AS_ERRORS` | OFF | 把警告当错误，适合 CI 与提交前自检 |
