@@ -83,7 +83,9 @@ endif()
 # ---------------------------------------------------------------------------
 # 命令行程序
 # ---------------------------------------------------------------------------
-add_executable(minikv src/tools/minikv_cli.cc)
+add_executable(minikv
+  src/tools/minikv_cli.cc
+  src/tools/minikv_demo.cc)
 target_link_libraries(minikv PRIVATE minikv_core)
 minikv_set_warnings(minikv)
 minikv_set_sanitizers(minikv)

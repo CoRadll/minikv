@@ -23,10 +23,18 @@
 #include "minikv/api/version.h"
 #include "minikv/util/logging.h"
 
+namespace minikv {
+namespace tools {
+// 定义在 minikv_demo.cc；tools 内部入口，不对外暴露头文件
+int RunDemoS1(const std::string& db_dir);
+}  // namespace tools
+}  // namespace minikv
+
 namespace {
 
 void PrintUsage() {
   std::printf("usage: minikv [--dir <path>] [--verbose] [--help] [--version]\n");
+  std::printf("       minikv demo s1 [--dir <path>]\n");
   std::printf("\n");
   std::printf("commands:\n");
   std::printf("  put <key> <value>   write or overwrite a key\n");
@@ -66,6 +74,29 @@ bool SplitFirstToken(const std::string& line, std::string* head, std::string* re
 }  // namespace
 
 int main(int argc, char** argv) {
+  // 子命令：minikv demo s1 [--dir <path>]
+  if (argc >= 2 && std::string_view(argv[1]) == "demo") {
+    const std::string phase = (argc >= 3) ? std::string(argv[2]) : std::string();
+    if (phase != "s1") {
+      std::fprintf(stderr, "unknown demo phase: %s (supported: s1)\n",
+                   phase.empty() ? "<none>" : phase.c_str());
+      return 2;
+    }
+
+    std::string demo_dir = "demo-data/s1";
+    for (int i = 3; i < argc; ++i) {
+      const std::string_view arg(argv[i]);
+      if (arg == "--dir" && i + 1 < argc) {
+        demo_dir = argv[++i];
+      } else {
+        std::fprintf(stderr, "unknown demo argument: %.*s\n", static_cast<int>(arg.size()),
+                     arg.data());
+        return 2;
+      }
+    }
+    return minikv::tools::RunDemoS1(demo_dir);
+  }
+
   std::string db_path = "data";
   bool verbose = false;
 

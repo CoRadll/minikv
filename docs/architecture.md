@@ -98,9 +98,61 @@ src/wal/wal_writer.cc  ↔  include/minikv/wal/wal_writer.h
 
 该规则由 `scripts/check_layout.ps1` 机械校验，避免靠自觉。
 
-## 7. 待补充
+## 7. S1 落地细节
 
-- S1：WAL 记录二进制布局与回放时序图
+### WAL 记录布局（小端）
+
+```
++--------+--------+----------+------------+-----+-------+
+| crc32  | type   | key_len  | value_len  | key | value |
+| 4 字节 | 1 字节 | 4 字节   | 4 字节     |     |       |
++--------+--------+----------+------------+-----+-------+
+```
+
+- `crc32`（Castagnoli）覆盖 `type` 到 `value` 末尾的全部字节
+- `type`：`1 = Put`、`2 = Delete`；未知值直接判为坏数据
+- 上限：key ≤ 1 KB、value ≤ 64 MB，超限在格式层拒绝
+
+### 写入时序（Engine::Put）
+
+```
+校验 key/value
+  → 加写锁（串行化写入）
+  → 编码记录
+  → WAL 追加（sync_on_write 时 fsync）
+      ↑ 失败则直接返回，内存不变
+  → MemTable 写入
+  → 返回
+```
+
+### 启动时序（Engine::Open）
+
+```
+创建数据目录
+  → WalReader::Replay 读取 wal.log
+      ├─ 逐条 DecodeRecord
+      ├─ 成功：callback 应用到 MemTable
+      └─ 失败：停止，记录 dropped_bytes
+  → 若 dropped_bytes > 0：截断文件并 fsync
+  → 以 valid_bytes 为起点打开 WalWriter（续写）
+```
+
+### 坏尾处理语义
+
+见 ADR D-010：无法从字节层面区分「尾部写了一半」与「中段损坏」，
+因此统一在第一条坏记录处停止并截断，丢弃字节数通过
+`WalReader::dropped_bytes()` 与 WARN 日志暴露。
+
+### 并发模型
+
+| 操作 | 同步方式 |
+|---|---|
+| Put / Delete / Close | Engine 级 `std::mutex`（WAL 顺序与内存一致） |
+| Get | MemTable 内 `std::shared_mutex` 共享锁，可与写并发 |
+| WalReader::Replay | 单线程，启动期一次性执行 |
+
+## 8. 待补充
+
 - S2：SSTable 文件格式（数据块 / 索引块 / Footer）
 - S3：Compaction 的文件选取策略与写放大实测
 - S4：布隆过滤器参数推导与缓存命中率
