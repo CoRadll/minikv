@@ -151,8 +151,62 @@ src/wal/wal_writer.cc  ↔  include/minikv/wal/wal_writer.h
 | Get | MemTable 内 `std::shared_mutex` 共享锁，可与写并发 |
 | WalReader::Replay | 单线程，启动期一次性执行 |
 
-## 8. 待补充
+## 8. S2 文件格式
 
-- S2：SSTable 文件格式（数据块 / 索引块 / Footer）
+### 8.1 数据块（目标 4 KB）
+
+条目采用前缀压缩，与上一条 key 共享公共前缀：
+
+```
+[shared_len varint][non_shared_len varint][value_len varint][flags:1][key_suffix][value]
+```
+
+- `flags` bit0 = 删除标记（墓碑）；bit1..7 保留
+- `value_len` 对墓碑为 0
+- 重启点：每 16 条记录存一个完整 key（`shared_len = 0`）
+
+块尾：
+
+```
+[restart_offsets: uint32 × N][restart_count: uint32][crc32: uint32]
+```
+
+- `crc32`（Castagnoli）覆盖块内除自身以外的全部字节
+- 空块也至少有一个重启点（偏移 0）
+
+### 8.2 索引块
+
+每个数据块一条记录，key 取该块最后一条 key（作为块的上界）：
+
+```
+[shared_len varint][non_shared_len varint][value_len varint][flags:1][key_suffix][value]
+value = [block_offset: uint64][block_size: uint32]
+```
+
+索引块本身也是"块"，使用同样的重启点与 CRC 结构。
+
+### 8.3 Footer（固定 48 字节）
+
+```
+[magic: 8][version: 4][reserved: 4][index_offset: 8][index_size: 8][filter_offset: 8][filter_size: 8]
+```
+
+- `magic` = `"MINIKVS2"`，用于识别与拒绝非本格式文件
+- `version` = 1，格式变更时递增
+- `filter_offset/size` 在 S2 写 0，S4 实现布隆过滤器后填入，位置先占住
+
+### 8.4 文件布局
+
+```
++---------+---------+ ... +---------+-------------+--------+
+| block 0 | block 1 |     | block N | index block | footer |
++---------+---------+ ... +---------+-------------+--------+
+```
+
+读取顺序：读末尾 48 字节 footer → 校验 magic/version → 读索引块 → 按 key 在索引中二分 → 定位数据块。
+
+### 8.5 待补充
+
+- S2：Manifest 记录格式与刷盘/回收时序
 - S3：Compaction 的文件选取策略与写放大实测
 - S4：布隆过滤器参数推导与缓存命中率
