@@ -53,6 +53,7 @@ add_library(minikv_core STATIC
   # table：SSTable 与过滤器
   src/table/block.cc
   src/table/block_builder.cc
+  src/table/format.cc
   src/table/table_builder.cc
   src/table/table_reader.cc
   src/table/bloom.cc
@@ -110,7 +111,8 @@ add_executable(minikv_tests
   tests/unit/memtable/memtable_test.cc
   tests/unit/db/engine_test.cc
   tests/integration/recovery_test.cc
-  tests/unit/table/block_test.cc)
+  tests/unit/table/block_test.cc
+  tests/unit/table/table_builder_test.cc)
 target_link_libraries(minikv_tests PRIVATE minikv_core)
 # 让测试可以用 "support/test_framework.h" 这样的路径引用测试基建
 target_include_directories(minikv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

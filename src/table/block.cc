@@ -185,4 +185,46 @@ Status Block::Get(std::string_view key, std::string* value, bool* deleted) const
   return Status::NotFound();
 }
 
+Status Block::ForEach(const EntryCallback& callback) const {
+  if (!valid_) {
+    return Status::Corruption("block is invalid");
+  }
+  if (!callback) {
+    return Status::InvalidArgument("block foreach: callback is empty");
+  }
+
+  const std::string_view data = contents_;
+  std::string current_key;
+  std::size_t offset = 0;
+
+  while (offset < entries_end_) {
+    std::uint32_t shared = 0;
+    std::uint32_t non_shared = 0;
+    std::uint32_t value_len = 0;
+    std::uint8_t flags = 0;
+    if (!DecodeEntryHeader(data, &offset, &shared, &non_shared, &value_len, &flags)) {
+      return Status::Corruption("block entry header is malformed");
+    }
+    if (shared > current_key.size()) {
+      return Status::Corruption("block shared prefix exceeds previous key");
+    }
+    if (offset + non_shared + value_len > entries_end_) {
+      return Status::Corruption("block entry overruns block boundary");
+    }
+
+    current_key.resize(shared);
+    current_key.append(data.data() + offset, non_shared);
+    offset += non_shared;
+
+    const std::string_view entry_value(data.data() + offset, value_len);
+    offset += value_len;
+
+    if (!callback(current_key, entry_value, (flags & 0x01u) != 0)) {
+      return Status::Ok();
+    }
+  }
+
+  return Status::Ok();
+}
+
 }  // namespace minikv
