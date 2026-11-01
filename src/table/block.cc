@@ -98,19 +98,11 @@ bool Block::Parse() {
   return true;
 }
 
-Status Block::Get(std::string_view key, std::string* value, bool* deleted) const {
-  if (!valid_) {
-    return Status::Corruption("block is invalid");
-  }
-  if (restarts_.empty()) {
-    return Status::NotFound();
-  }
-
+bool Block::FindRestartFor(std::string_view target, std::size_t* index) const {
   const std::string_view data = contents_;
 
-  // 1) 在重启点之间二分，找到最后一个 restart_key <= target
-  auto restart_key_at = [&](std::size_t index, std::string* out) -> bool {
-    std::size_t offset = restarts_[index];
+  auto restart_key_at = [&](std::size_t at, std::string* out) -> bool {
+    std::size_t offset = restarts_[at];
     std::uint32_t shared = 0;
     std::uint32_t non_shared = 0;
     std::uint32_t value_len = 0;
@@ -128,24 +120,51 @@ Status Block::Get(std::string_view key, std::string* value, bool* deleted) const
     return true;
   };
 
+  std::string first_key;
+  if (!restart_key_at(0, &first_key)) {
+    return false;
+  }
+  if (first_key > target) {
+    *index = 0;  // 目标比块内最小 key 还小
+    return true;
+  }
+
   std::size_t left = 0;
   std::size_t right = restarts_.size() - 1;
   while (left < right) {
     const std::size_t mid = left + (right - left + 1) / 2;
     std::string restart_key;
     if (!restart_key_at(mid, &restart_key)) {
-      return Status::Corruption("block restart entry is malformed");
+      return false;
     }
-    if (restart_key <= key) {
+    if (restart_key <= target) {
       left = mid;
     } else {
       right = mid - 1;
     }
   }
 
-  // 2) 从该重启点开始顺序扫描
+  *index = left;
+  return true;
+}
+
+Status Block::Get(std::string_view key, std::string* value, bool* deleted) const {
+  if (!valid_) {
+    return Status::Corruption("block is invalid");
+  }
+  if (restarts_.empty() || entries_end_ == 0) {
+    return Status::NotFound();
+  }
+
+  std::size_t start = 0;
+  if (!FindRestartFor(key, &start)) {
+    return Status::Corruption("block restart entry is malformed");
+  }
+
+  const std::string_view data = contents_;
   std::string current_key;
-  std::size_t offset = restarts_[left];
+  std::size_t offset = restarts_[start];
+
   while (offset < entries_end_) {
     std::uint32_t shared = 0;
     std::uint32_t non_shared = 0;
@@ -179,6 +198,63 @@ Status Block::Get(std::string_view key, std::string* value, bool* deleted) const
     }
     if (current_key > key) {
       return Status::NotFound();
+    }
+  }
+
+  return Status::NotFound();
+}
+
+Status Block::Seek(std::string_view target, std::string* key, std::string* value,
+                   bool* deleted) const {
+  if (!valid_) {
+    return Status::Corruption("block is invalid");
+  }
+  if (restarts_.empty() || entries_end_ == 0) {
+    return Status::NotFound();
+  }
+
+  std::size_t start = 0;
+  if (!FindRestartFor(target, &start)) {
+    return Status::Corruption("block restart entry is malformed");
+  }
+
+  const std::string_view data = contents_;
+  std::string current_key;
+  std::size_t offset = restarts_[start];
+
+  while (offset < entries_end_) {
+    std::uint32_t shared = 0;
+    std::uint32_t non_shared = 0;
+    std::uint32_t value_len = 0;
+    std::uint8_t flags = 0;
+    if (!DecodeEntryHeader(data, &offset, &shared, &non_shared, &value_len, &flags)) {
+      return Status::Corruption("block entry header is malformed");
+    }
+    if (shared > current_key.size()) {
+      return Status::Corruption("block shared prefix exceeds previous key");
+    }
+    if (offset + non_shared + value_len > entries_end_) {
+      return Status::Corruption("block entry overruns block boundary");
+    }
+
+    current_key.resize(shared);
+    current_key.append(data.data() + offset, non_shared);
+    offset += non_shared;
+
+    const std::string_view entry_value(data.data() + offset, value_len);
+    offset += value_len;
+
+    if (current_key >= target) {
+      if (key != nullptr) {
+        key->assign(current_key);
+      }
+      if (value != nullptr) {
+        value->assign(entry_value.data(), entry_value.size());
+      }
+      if (deleted != nullptr) {
+        *deleted = (flags & 0x01u) != 0;
+      }
+      return Status::Ok();
     }
   }
 

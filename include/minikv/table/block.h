@@ -27,6 +27,10 @@ class Block {
   // 命中返回 OK；key 不在块内返回 NotFound；块损坏返回 Corruption。
   Status Get(std::string_view key, std::string* value, bool* deleted) const;
 
+  // 返回第一个 key >= target 的条目（索引块用它定位数据块）。
+  // 没有满足条件的条目时返回 NotFound。
+  Status Seek(std::string_view target, std::string* key, std::string* value, bool* deleted) const;
+
   // 顺序遍历全部条目；回调返回 false 时提前终止。
   Status ForEach(const EntryCallback& callback) const;
 
@@ -35,6 +39,9 @@ class Block {
 
  private:
   bool Parse();
+
+  // 找到最后一个 restart_key <= target 的重启点下标；损坏返回 false。
+  bool FindRestartFor(std::string_view target, std::size_t* index) const;
 
   std::string contents_;
   std::vector<std::uint32_t> restarts_;
