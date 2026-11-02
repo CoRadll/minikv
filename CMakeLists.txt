@@ -110,6 +110,7 @@ add_executable(minikv_tests
   tests/unit/wal/wal_reader_test.cc
   tests/unit/memtable/memtable_test.cc
   tests/unit/db/engine_test.cc
+  tests/unit/db/flush_test.cc
   tests/integration/recovery_test.cc
   tests/unit/table/block_test.cc
   tests/unit/table/table_builder_test.cc

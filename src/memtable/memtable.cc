@@ -58,15 +58,35 @@ Status MemTable::Get(std::string_view key, std::string* value) const {
   if (value == nullptr) {
     return Status::InvalidArgument("memtable get: value is null");
   }
+  return (Lookup(key, value) == LookupResult::kFound) ? Status::Ok() : Status::NotFound();
+}
 
+MemTable::LookupResult MemTable::Lookup(std::string_view key, std::string* value) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
   const auto it = table_.find(key);
-  if (it == table_.end() || it->second.deleted) {
-    return Status::NotFound();
+  if (it == table_.end()) {
+    return LookupResult::kNotFound;
   }
+  if (it->second.deleted) {
+    return LookupResult::kDeleted;
+  }
+  if (value != nullptr) {
+    *value = it->second.value;
+  }
+  return LookupResult::kFound;
+}
 
-  *value = it->second.value;
-  return Status::Ok();
+void MemTable::ForEachInOrder(
+    const std::function<bool(std::string_view key, std::string_view value, bool deleted)>& fn) const {
+  if (!fn) {
+    return;
+  }
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  for (const auto& pair : table_) {
+    if (!fn(pair.first, pair.second.value, pair.second.deleted)) {
+      return;
+    }
+  }
 }
 
 bool MemTable::Empty() const {

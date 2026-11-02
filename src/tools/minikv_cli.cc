@@ -51,6 +51,7 @@ void PrintStats(minikv::Engine* engine, const std::string& db_path) {
   std::printf("wal bytes      : %llu\n", static_cast<unsigned long long>(stats.wal_bytes));
   std::printf("memtable       : %zu entries, %zu bytes (approx)\n", stats.memtable_entries,
               stats.memtable_bytes);
+  std::printf("sstables       : %zu\n", stats.sstable_count);
 }
 
 // 取第一个空白分隔的 token，其余作为 remainder（不做 trim 以外的处理）

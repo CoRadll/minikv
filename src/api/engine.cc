@@ -1,15 +1,21 @@
 #include "minikv/api/engine.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "minikv/db/manifest.h"
 #include "minikv/memtable/memtable.h"
+#include "minikv/table/table_builder.h"
+#include "minikv/table/table_reader.h"
 #include "minikv/util/env.h"
+#include "minikv/util/file.h"
 #include "minikv/util/logging.h"
 #include "minikv/wal/wal_format.h"
 #include "minikv/wal/wal_reader.h"
@@ -19,6 +25,7 @@ namespace minikv {
 namespace {
 
 constexpr const char* kWalFileName = "wal.log";
+constexpr const char* kManifestFileName = "MANIFEST";
 
 Status ValidateKeyValue(std::string_view key, std::string_view value) {
   if (key.empty()) {
@@ -32,6 +39,15 @@ Status ValidateKeyValue(std::string_view key, std::string_view value) {
   }
   return Status::Ok();
 }
+
+std::string SstableFileName(std::uint64_t file_number) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%06llu.sst",
+                static_cast<unsigned long long>(file_number));
+  return std::string(buffer);
+}
+
+}  // namespace
 
 class EngineImpl : public Engine {
  public:
@@ -49,38 +65,53 @@ class EngineImpl : public Engine {
       return status;
     }
 
-    const std::filesystem::path wal_path = options_.db_path / kWalFileName;
+    wal_path_ = options_.db_path / kWalFileName;
+    manifest_path_ = options_.db_path / kManifestFileName;
 
-    // 1) 回放：把日志里的变更重新应用到内存表
-    memtable_ = std::make_unique<MemTable>();
-    std::uint64_t replay_count = 0;
-    WalReader reader(wal_path);
-    status = reader.Replay([this, &replay_count](const WalRecord& record) {
-      if (record.type == RecordType::kPut) {
-        memtable_->Put(record.key, record.value);
-      } else {
-        memtable_->Delete(record.key);
+    // 1) 先按 MANIFEST 打开所有 SSTable（倒序入队：新文件在前，查询从新到旧）
+    status = Manifest::Load(manifest_path_, &manifest_);
+    if (!status.ok()) {
+      return status;
+    }
+    for (auto it = manifest_.files().rbegin(); it != manifest_.files().rend(); ++it) {
+      const std::filesystem::path table_path = options_.db_path / SstableFileName(it->file_number);
+      std::unique_ptr<TableReader> reader;
+      status = TableReader::Open(table_path, &reader);
+      if (!status.ok()) {
+        return Status::Corruption("cannot open sstable " + table_path.string() + ": " +
+                                  status.ToString());
       }
-      ++replay_count;
+      tables_.push_back(std::move(reader));
+    }
+
+    // 2) 再回放 WAL（只包含最后一次刷盘之后的写入）
+    mem_ = std::make_unique<MemTable>();
+    std::uint64_t replayed = 0;
+    WalReader reader(wal_path_);
+    status = reader.Replay([this, &replayed](const WalRecord& record) {
+      if (record.type == RecordType::kPut) {
+        mem_->Put(record.key, record.value);
+      } else {
+        mem_->Delete(record.key);
+      }
+      ++replayed;
     });
     if (!status.ok()) {
       return status;
     }
-
     if (reader.dropped_bytes() > 0) {
       LOG_WARN("recovered with truncated wal: dropped " + std::to_string(reader.dropped_bytes()) +
                " bytes");
     }
 
-    // 2) 以「有效长度」继续追加，坏尾不会复活
     wal_ = std::make_unique<WalWriter>();
-    status = wal_->Open(wal_path, options_.sync_on_write, reader.valid_bytes());
+    status = wal_->Open(wal_path_, options_.sync_on_write, reader.valid_bytes());
     if (!status.ok()) {
       return status;
     }
 
-    LOG_INFO("engine opened: records replayed = " + std::to_string(replay_count) + ", wal bytes = " +
-             std::to_string(reader.valid_bytes()));
+    LOG_INFO("engine opened: sstables = " + std::to_string(tables_.size()) +
+             ", wal records replayed = " + std::to_string(replayed));
     return Status::Ok();
   }
 
@@ -90,7 +121,7 @@ class EngineImpl : public Engine {
       return status;
     }
 
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return Status::Closed("engine is closed");
     }
@@ -100,23 +131,13 @@ class EngineImpl : public Engine {
     record.key.assign(key.data(), key.size());
     record.value.assign(value.data(), value.size());
 
-    // 先写 WAL：写成功才允许改内存，否则会出现「内存有、磁盘没有」
     status = wal_->Append(record);
     if (!status.ok()) {
       return status;
     }
-    memtable_->Put(key, value);
-    return Status::Ok();
-  }
+    mem_->Put(key, value);
 
-  Status Get(std::string_view key, std::string* value) override {
-    if (value == nullptr) {
-      return Status::InvalidArgument("get: value is null");
-    }
-    if (closed_) {
-      return Status::Closed("engine is closed");
-    }
-    return memtable_->Get(key, value);
+    return MaybeFlushLocked();
   }
 
   Status Delete(std::string_view key) override {
@@ -125,7 +146,7 @@ class EngineImpl : public Engine {
       return status;
     }
 
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return Status::Closed("engine is closed");
     }
@@ -138,53 +159,202 @@ class EngineImpl : public Engine {
     if (!status.ok()) {
       return status;
     }
-    memtable_->Delete(key);
-    return Status::Ok();
+    mem_->Delete(key);
+
+    return MaybeFlushLocked();
+  }
+
+  Status Get(std::string_view key, std::string* value) override {
+    if (value == nullptr) {
+      return Status::InvalidArgument("get: value is null");
+    }
+
+    // 刷盘会修改 tables_，这里与写共用一把锁，保证不会读到半成品状态
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+      return Status::Closed("engine is closed");
+    }
+
+    // 1) 当前内存表
+    switch (mem_->Lookup(key, value)) {
+      case MemTable::LookupResult::kFound:
+        return Status::Ok();
+      case MemTable::LookupResult::kDeleted:
+        return Status::NotFound();  // 墓碑：不再往下找
+      case MemTable::LookupResult::kNotFound:
+        break;
+    }
+
+    // 2) 正在刷盘的内存表
+    if (imm_ != nullptr) {
+      switch (imm_->Lookup(key, value)) {
+        case MemTable::LookupResult::kFound:
+          return Status::Ok();
+        case MemTable::LookupResult::kDeleted:
+          return Status::NotFound();
+        case MemTable::LookupResult::kNotFound:
+          break;
+      }
+    }
+
+    // 3) 从新到旧查 SSTable
+    for (const auto& table : tables_) {
+      bool deleted = false;
+      const Status status = table->Get(key, value, &deleted);
+      if (status.ok()) {
+        return deleted ? Status::NotFound() : Status::Ok();
+      }
+      if (!status.IsNotFound()) {
+        return status;
+      }
+    }
+
+    return Status::NotFound();
+  }
+
+  Status Flush() override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+      return Status::Closed("engine is closed");
+    }
+    return FlushLocked();
   }
 
   std::unique_ptr<Iterator> NewIterator() override {
-    // TODO(S5): 合并 MemTable 与各层 SSTable 的迭代器
+    // TODO(S4): 合并 MemTable 与各层 SSTable 的迭代器
     return nullptr;
   }
 
   EngineStats GetStats() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
     EngineStats stats;
     if (wal_) {
       stats.wal_bytes = wal_->size();
     }
-    if (memtable_) {
-      stats.memtable_entries = memtable_->EntryCount();
-      stats.memtable_bytes = memtable_->ApproximateSize();
+    if (mem_) {
+      stats.memtable_entries = mem_->EntryCount();
+      stats.memtable_bytes = mem_->ApproximateSize();
     }
+    stats.sstable_count = tables_.size();
     return stats;
   }
 
   Status Close() override {
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return Status::Ok();
     }
-    closed_ = true;
 
-    Status status = Status::Ok();
-    if (wal_) {
+    // 关闭前把内存表刷盘：重启更快，也方便演示观察 .sst
+    Status status = FlushLocked();
+    if (status.ok() && wal_) {
       status = wal_->Sync();
       if (status.ok()) {
         wal_->Close();
       }
     }
+    closed_ = true;
     return status;
   }
 
  private:
+  Status MaybeFlushLocked() {
+    if (mem_->ApproximateSize() < options_.memtable_size) {
+      return Status::Ok();
+    }
+    return FlushLocked();
+  }
+
+  Status FlushLocked() {
+    if (mem_ == nullptr || mem_->Empty()) {
+      return Status::Ok();
+    }
+
+    // 1) 冻结：新写入进新的内存表，旧表等待落盘
+    imm_ = std::move(mem_);
+    mem_ = std::make_unique<MemTable>();
+
+    // 2) 写 SSTable
+    const std::uint64_t file_number = manifest_.next_file_number();
+    const std::filesystem::path table_path = options_.db_path / SstableFileName(file_number);
+
+    TableBuilder builder(table_path);
+    Status status = Status::Ok();
+    imm_->ForEachInOrder(
+        [&builder, &status](std::string_view key, std::string_view value, bool deleted) {
+          status = builder.Add(key, value, deleted);
+          return status.ok();
+        });
+    if (status.ok()) {
+      status = builder.Finish();
+    }
+    if (!status.ok()) {
+      LOG_ERROR("flush failed while writing " + table_path.string() + ": " + status.ToString());
+      return status;  // imm_ 保留：数据仍可读，下次刷盘会重试
+    }
+
+    std::unique_ptr<TableReader> reader;
+    status = TableReader::Open(table_path, &reader);
+    if (!status.ok()) {
+      return status;
+    }
+
+    // 3) 先登记到 MANIFEST 并落盘，再清 WAL
+    status = manifest_.AddFile(0, file_number, builder.smallest_key(), builder.largest_key());
+    if (status.ok()) {
+      status = manifest_.Save();
+    }
+    if (!status.ok()) {
+      return status;
+    }
+
+    tables_.insert(tables_.begin(), std::move(reader));
+
+    // 4) 数据已在 SSTable + MANIFEST 中，WAL 可以清空。
+    //    若在清空 WAL 之前崩溃，重放这些记录是幂等的，不会产生错误数据。
+    status = ResetWalLocked();
+    if (!status.ok()) {
+      return status;
+    }
+
+    imm_.reset();
+    LOG_INFO("flushed memtable to " + table_path.string());
+    return Status::Ok();
+  }
+
+  Status ResetWalLocked() {
+    if (!wal_) {
+      return Status::Ok();
+    }
+    wal_->Close();
+
+    File file;
+    Status status = file.Open(wal_path_, FileOpenMode::kReadWrite);
+    if (!status.ok()) {
+      return status;
+    }
+    status = file.Truncate(0);
+    if (status.ok()) {
+      status = file.Sync();
+    }
+    file.Close();
+    if (!status.ok()) {
+      return status;
+    }
+    return wal_->Open(wal_path_, options_.sync_on_write, 0);
+  }
+
   Options options_;
-  std::unique_ptr<MemTable> memtable_;
+  std::filesystem::path wal_path_;
+  std::filesystem::path manifest_path_;
+  Manifest manifest_;
+  std::unique_ptr<MemTable> mem_;
+  std::unique_ptr<MemTable> imm_;
+  std::vector<std::unique_ptr<TableReader>> tables_;  // 新文件在前
   std::unique_ptr<WalWriter> wal_;
-  std::mutex write_mutex_;
+  mutable std::mutex mutex_;
   bool closed_ = false;
 };
-
-}  // namespace
 
 Status Engine::Open(const Options& options, std::unique_ptr<Engine>* engine) {
   if (engine == nullptr) {
