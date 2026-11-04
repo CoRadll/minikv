@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,6 +48,67 @@ std::string SstableFileName(std::uint64_t file_number) {
   return std::string(buffer);
 }
 
+// 只认 6 位数字 + ".sst"，其余文件一律忽略（避免误删用户文件）
+bool ParseSstableFileName(const std::string& name, std::uint64_t* number) {
+  if (name.size() != 10 || name.compare(6, 4, ".sst") != 0) {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (int i = 0; i < 6; ++i) {
+    const char c = name[static_cast<std::size_t>(i)];
+    if (c < '0' || c > '9') {
+      return false;
+    }
+    value = value * 10 + static_cast<std::uint64_t>(c - '0');
+  }
+  *number = value;
+  return true;
+}
+
+// MANIFEST.tmp 是"写到一半"的中间产物，永远不是权威数据
+Status RemoveStaleTempFiles(const std::filesystem::path& dir) {
+  const std::filesystem::path tmp = (dir / kManifestFileName).string() + ".tmp";
+  if (!FileExists(tmp)) {
+    return Status::Ok();
+  }
+  LOG_WARN("removing stale " + tmp.string());
+  return RemoveFile(tmp);
+}
+
+// 删除未被 MANIFEST 引用的 .sst：崩溃发生在"写完文件但还没登记"时会产生这种孤儿
+Status RemoveOrphanSstables(const std::filesystem::path& dir, const Manifest& manifest,
+                            std::size_t* removed) {
+  std::set<std::uint64_t> referenced;
+  for (const Manifest::FileMeta& meta : manifest.files()) {
+    referenced.insert(meta.file_number);
+  }
+
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      return Status::IOError("list " + dir.string() + ": " + ec.message());
+    }
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+
+    std::uint64_t number = 0;
+    if (!ParseSstableFileName(entry.path().filename().string(), &number)) {
+      continue;
+    }
+    if (referenced.count(number) != 0) {
+      continue;
+    }
+
+    Status status = RemoveFile(entry.path());
+    if (!status.ok()) {
+      return status;
+    }
+    ++(*removed);
+  }
+  return Status::Ok();
+}
+
 }  // namespace
 
 class EngineImpl : public Engine {
@@ -73,6 +135,21 @@ class EngineImpl : public Engine {
     if (!status.ok()) {
       return status;
     }
+
+    // 清理上一次崩溃可能留下的半成品：残留临时文件与未被 MANIFEST 引用的 .sst
+    status = RemoveStaleTempFiles(options_.db_path);
+    if (!status.ok()) {
+      return status;
+    }
+    std::size_t removed_orphans = 0;
+    status = RemoveOrphanSstables(options_.db_path, manifest_, &removed_orphans);
+    if (!status.ok()) {
+      return status;
+    }
+    if (removed_orphans > 0) {
+      LOG_WARN("removed " + std::to_string(removed_orphans) + " orphan sstable(s)");
+    }
+
     for (auto it = manifest_.files().rbegin(); it != manifest_.files().rend(); ++it) {
       const std::filesystem::path table_path = options_.db_path / SstableFileName(it->file_number);
       std::unique_ptr<TableReader> reader;

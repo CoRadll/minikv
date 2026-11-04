@@ -112,6 +112,7 @@ add_executable(minikv_tests
   tests/unit/db/engine_test.cc
   tests/unit/db/flush_test.cc
   tests/integration/recovery_test.cc
+  tests/integration/crash_boundary_test.cc
   tests/unit/table/block_test.cc
   tests/unit/table/table_builder_test.cc
   tests/unit/table/table_reader_test.cc)
