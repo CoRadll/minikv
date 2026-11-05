@@ -6,12 +6,15 @@
 //   - 任一步不符即 FAIL 并返回非零退出码
 //   - transcript 同时落盘到 demo/s1-transcript.txt
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "minikv/api/engine.h"
 #include "minikv/api/options.h"
@@ -310,6 +313,232 @@ int RunDemoS1(const std::string& db_dir) {
   out.Separator();
 
   const fs::path transcript_path = "demo/s1-transcript.txt";
+  const bool saved = out.Save(transcript_path);
+  std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
+              saved ? "" : " (FAILED)");
+
+  return checker.ok() ? 0 : 1;
+}
+
+namespace {
+
+struct DataFile {
+  std::string name;
+  std::uint64_t size = 0;
+};
+
+std::vector<DataFile> ListDataFiles(const fs::path& dir) {
+  std::vector<DataFile> files;
+  std::error_code ec;
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    DataFile file;
+    file.name = entry.path().filename().string();
+    const auto size = fs::file_size(entry.path(), ec);
+    file.size = ec ? 0 : static_cast<std::uint64_t>(size);
+    files.push_back(std::move(file));
+  }
+  std::sort(files.begin(), files.end(),
+            [](const DataFile& a, const DataFile& b) { return a.name < b.name; });
+  return files;
+}
+
+int CountSstables(const std::vector<DataFile>& files) {
+  int count = 0;
+  for (const DataFile& file : files) {
+    if (file.name.size() == 10 && file.name.compare(6, 4, ".sst") == 0) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+}  // namespace
+
+int RunDemoS2(const std::string& db_dir) {
+  SetLogSink([](const std::string&) {});
+
+  Transcript out;
+  Checker checker(out);
+
+  const fs::path db_path(db_dir);
+  out.Separator();
+  out.Line(" MiniKV S2 Demo - SSTable flush + restart");
+  out.Line(" data dir : " + db_path.string());
+  out.Line(" flush threshold : 2 KB");
+  out.Separator();
+  out.Line("");
+
+  std::error_code ec;
+  fs::remove_all(db_path, ec);
+
+  Options options;
+  options.db_path = db_path;
+  options.sync_on_write = true;
+  options.memtable_size = 2048;
+
+  std::unique_ptr<Engine> engine;
+  auto open_engine = [&]() -> bool {
+    engine.reset();
+    const Status status = Engine::Open(options, &engine);
+    checker.Check(status.ok(), "open engine: " + status.ToString());
+    return status.ok();
+  };
+
+  // ---------------------------------------------------------------------
+  out.Line("[1/7] open an empty database");
+  if (!open_engine()) {
+    return 1;
+  }
+  {
+    const EngineStats stats = engine->GetStats();
+    out.Line("  sstables : " + std::to_string(stats.sstable_count) + ", wal bytes : " +
+             std::to_string(stats.wal_bytes));
+    checker.Check(stats.sstable_count == 0, "empty database has no sstable");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[2/7] write 200 entries (auto flush at 2 KB)");
+  constexpr int kCount = 200;
+  {
+    int failed = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char value[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(value, sizeof(value), "value-%04dxxxxxxxx", i);
+      if (!engine->Put(key, value).ok()) {
+        ++failed;
+      }
+    }
+    checker.Check(failed == 0, "all 200 puts succeeded");
+    const EngineStats stats = engine->GetStats();
+    out.Line("  sstables after writes : " + std::to_string(stats.sstable_count));
+    out.Line("  memtable              : " + std::to_string(stats.memtable_entries) +
+             " entries, " + std::to_string(stats.memtable_bytes) + " bytes");
+    checker.Check(stats.sstable_count >= 2, "threshold triggered at least 2 flushes");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[3/7] files on disk");
+  {
+    const std::vector<DataFile> files = ListDataFiles(db_path);
+    for (const DataFile& file : files) {
+      out.Line("  " + file.name + "  " + std::to_string(file.size) + " bytes");
+    }
+    checker.Check(CountSstables(files) ==
+                      static_cast<int>(engine->GetStats().sstable_count),
+                  "on-disk sstable count matches stats");
+    checker.Check(fs::exists(db_path / "MANIFEST"), "MANIFEST exists");
+    checker.Check(fs::exists(db_path / "wal.log"), "wal.log exists");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[4/7] close (flushes the tail) and reopen");
+  {
+    checker.Check(engine->Close().ok(), "close engine");
+    if (!open_engine()) {
+      return 1;
+    }
+    const EngineStats stats = engine->GetStats();
+    out.Line("  after reopen : sstables = " + std::to_string(stats.sstable_count) +
+             ", wal bytes = " + std::to_string(stats.wal_bytes));
+    checker.Check(stats.wal_bytes == 0, "wal is empty because everything was flushed");
+
+    int mismatches = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char expected[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(expected, sizeof(expected), "value-%04dxxxxxxxx", i);
+      std::string value;
+      if (!engine->Get(key, &value).ok() || value != expected) {
+        ++mismatches;
+      }
+    }
+    out.Line("  verified " + std::to_string(kCount) + " keys, mismatches = " +
+             std::to_string(mismatches));
+    checker.Check(mismatches == 0, "all entries survive restart");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[5/7] delete 10 keys, then flush");
+  {
+    int failed = 0;
+    for (int i = 0; i < 10; ++i) {
+      char key[32];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      if (!engine->Delete(key).ok()) {
+        ++failed;
+      }
+    }
+    checker.Check(failed == 0, "10 deletes succeeded");
+    checker.Check(engine->Flush().ok(), "flush after deletes");
+    out.Line("  sstables after flush : " +
+             std::to_string(engine->GetStats().sstable_count));
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[6/7] restart and verify tombstones");
+  {
+    checker.Check(engine->Close().ok(), "close before restart");
+    if (!open_engine()) {
+      return 1;
+    }
+
+    int resurrected = 0;
+    int lost = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::string value;
+      const Status status = engine->Get(key, &value);
+      if (i < 10) {
+        if (!status.IsNotFound()) {
+          ++resurrected;
+        }
+      } else if (!status.ok()) {
+        ++lost;
+      }
+    }
+    out.Line("  deleted-but-resurrected = " + std::to_string(resurrected) +
+             ", lost = " + std::to_string(lost));
+    checker.Check(resurrected == 0, "deleted keys stay deleted");
+    checker.Check(lost == 0, "remaining keys are intact");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[7/7] summary");
+  {
+    const std::vector<DataFile> files = ListDataFiles(db_path);
+    std::uint64_t total_bytes = 0;
+    for (const DataFile& file : files) {
+      total_bytes += file.size;
+    }
+    out.Line("  sstables     : " + std::to_string(CountSstables(files)));
+    out.Line("  total on disk: " + std::to_string(total_bytes) + " bytes");
+    out.Line("  wal bytes    : " + std::to_string(engine->GetStats().wal_bytes));
+    checker.Check(CountSstables(files) >= 3, "deletes produced an additional sstable");
+    checker.Check(engine->Close().ok(), "final close");
+  }
+
+  out.Line("");
+  out.Separator();
+  char summary[256];
+  std::snprintf(summary, sizeof(summary), " result: %d/%d checks passed  (%s)", checker.passed(),
+                checker.checks(), checker.ok() ? "OK" : "FAILED");
+  out.Line(summary);
+  out.Separator();
+
+  const fs::path transcript_path = "demo/s2-transcript.txt";
   const bool saved = out.Save(transcript_path);
   std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
               saved ? "" : " (FAILED)");
