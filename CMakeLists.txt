@@ -82,6 +82,34 @@ if (MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# 头文件自包含检查
+#
+# 每个公开头文件单独生成一个翻译单元并编译。任何"依赖其他头间接包含"的
+# 情况都会在这里暴露（例如 skiplist.h 用了 std::string 却忘了 #include <string>，
+# 旧版 MSVC 的 <string_view> 恰好间接包含 <string>，CI 换了新版才炸）。
+# ---------------------------------------------------------------------------
+file(GLOB_RECURSE MINIKV_PUBLIC_HEADERS CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/minikv/*.h)
+
+set(MINIKV_HEADER_CHECK_SOURCES "")
+set(MINIKV_HEADER_CHECK_DIR ${CMAKE_CURRENT_BINARY_DIR}/header_check)
+file(MAKE_DIRECTORY ${MINIKV_HEADER_CHECK_DIR})
+
+foreach(header IN LISTS MINIKV_PUBLIC_HEADERS)
+  file(RELATIVE_PATH header_rel ${CMAKE_CURRENT_SOURCE_DIR}/include ${header})
+  string(REPLACE "/" "_" header_flat ${header_rel})
+  string(REPLACE "." "_" header_flat ${header_flat})
+  set(header_src ${MINIKV_HEADER_CHECK_DIR}/${header_flat}.cc)
+  file(GENERATE OUTPUT ${header_src} CONTENT "#include \"${header_rel}\"\n")
+  list(APPEND MINIKV_HEADER_CHECK_SOURCES ${header_src})
+endforeach()
+
+add_library(minikv_header_check OBJECT ${MINIKV_HEADER_CHECK_SOURCES})
+target_include_directories(minikv_header_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+minikv_set_warnings(minikv_header_check)
+minikv_set_sanitizers(minikv_header_check)
+
+# ---------------------------------------------------------------------------
 # 命令行程序
 # ---------------------------------------------------------------------------
 add_executable(minikv

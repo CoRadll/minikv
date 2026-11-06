@@ -1,6 +1,5 @@
 # ===== 构建产物 =====
-build/
-build-asan/
+build*/
 out/
 obj/
 bin/
