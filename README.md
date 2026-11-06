@@ -17,7 +17,7 @@
 |---|---|---|---|
 | S0 | 工程骨架、构建系统、目录同构检查 | `minikv --version` + 布局检查 | ✅ 已完成 |
 | S1 | WAL + MemTable + 崩溃恢复 | `demo s1`：写入→读→删→重启回放→坏尾截断 | ✅ 已完成 |
-| S2 | SSTable 落盘、Manifest、启动加载 | `demo s2`：阈值触发刷盘→重启从 SSTable 读 | 🚧 进行中 |
+| S2 | SSTable 落盘、Manifest、启动加载 | `demo s2`：阈值触发刷盘→重启从 SSTable 读 | ✅ 已完成 |
 | S3 | Compaction 与版本切换 | `demo s3`：合并前后文件数与大小对比 | ⬜ 待开始 |
 | S4 | 布隆过滤器、块缓存、Scan 归并 | `demo s4`：布隆过滤器挡掉的读盘次数 | ⬜ 待开始 |
 | S5 | 对外接口、压测工具、崩溃测试 | `demo s5`：真实 kill -9 恢复 + bench 数字 | ⬜ 待开始 |

@@ -2,18 +2,21 @@
 
 #include <cstddef>
 #include <functional>
-#include <map>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
 
+#include "minikv/memtable/skiplist.h"
+#include "minikv/util/arena.h"
 #include "minikv/util/status.h"
 
 namespace minikv {
 
 // 有序内存表。删除写墓碑而不是真删，因为磁盘上的旧版本可能还在。
 //
-// S1 内部用 std::map 实现；S2 末尾换成跳表，但这里的方法签名保持不变。
+// 内部由 Arena + 跳表实现：
+//   - 节点、key、value 都从 Arena 批量分配，整表释放时一次性归还
+//   - 并发由这里的读写锁保证（跳表本身不加锁）
 class MemTable {
  public:
   // 三态查找结果：值还在 / 已被删除（墓碑）/ 根本没写过。
@@ -23,6 +26,8 @@ class MemTable {
     kDeleted,
     kNotFound,
   };
+
+  MemTable();
 
   void Put(std::string_view key, std::string_view value);
   void Delete(std::string_view key);
@@ -42,13 +47,9 @@ class MemTable {
   std::size_t ApproximateSize() const;
 
  private:
-  struct Entry {
-    std::string value;
-    bool deleted = false;
-  };
-
   mutable std::shared_mutex mutex_;
-  std::map<std::string, Entry, std::less<>> table_;
+  Arena arena_;
+  SkipList table_;
   std::size_t approx_size_ = 0;
 };
 

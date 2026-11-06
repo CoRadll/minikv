@@ -104,11 +104,13 @@ add_executable(minikv_tests
   tests/unit/util/crc32c_test.cc
   tests/unit/util/coding_test.cc
   tests/unit/util/file_test.cc
+  tests/unit/util/arena_test.cc
   tests/unit/util/env_test.cc
   tests/unit/wal/wal_format_test.cc
   tests/unit/wal/wal_writer_test.cc
   tests/unit/wal/wal_reader_test.cc
   tests/unit/memtable/memtable_test.cc
+  tests/unit/memtable/skiplist_test.cc
   tests/unit/db/engine_test.cc
   tests/unit/db/flush_test.cc
   tests/integration/recovery_test.cc
