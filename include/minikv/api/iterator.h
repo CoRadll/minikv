@@ -20,6 +20,9 @@ class Iterator {
   virtual std::string_view key() const = 0;
   virtual std::string_view value() const = 0;
 
+  // 指向的条目是否是墓碑。Compaction 需要据此决定丢弃还是写出。
+  virtual bool IsDeleted() const = 0;
+
   virtual Status status() const = 0;
 };
 

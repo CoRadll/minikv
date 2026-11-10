@@ -146,7 +146,9 @@ add_executable(minikv_tests
   tests/integration/multi_file_test.cc
   tests/unit/table/block_test.cc
   tests/unit/table/table_builder_test.cc
-  tests/unit/table/table_reader_test.cc)
+  tests/unit/table/table_reader_test.cc
+  tests/unit/table/table_iterator_test.cc
+  tests/unit/table/merging_iterator_test.cc)
 target_link_libraries(minikv_tests PRIVATE minikv_core)
 # 让测试可以用 "support/test_framework.h" 这样的路径引用测试基建
 target_include_directories(minikv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

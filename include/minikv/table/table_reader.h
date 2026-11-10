@@ -24,12 +24,14 @@ class TableReader {
   // 命中返回 OK；不存在返回 NotFound；文件/块损坏返回 Corruption。
   Status Get(std::string_view key, std::string* value, bool* deleted) const;
 
-  // TODO(S4): 顺序迭代（Scan / Compaction 用）
+  // 顺序迭代。注意：迭代器持有本对象的指针，reader 必须比 iterator 活得久。
   std::unique_ptr<Iterator> NewIterator() const;
 
   std::uint64_t file_size() const { return file_size_; }
 
  private:
+  class TableIterator;
+
   TableReader() = default;
 
   std::filesystem::path path_;

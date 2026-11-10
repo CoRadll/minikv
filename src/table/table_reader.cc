@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "minikv/table/format.h"
 #include "minikv/util/coding.h"
@@ -127,9 +128,161 @@ Status TableReader::Get(std::string_view key, std::string* value, bool* deleted)
   return block.Get(key, value, deleted);
 }
 
+// 顺序迭代器：按索引块的顺序逐块读取，每块解出条目后逐条前进。
+//
+// 只缓存"当前块"的条目（4KB），不会把整个文件读进内存。
+class TableReader::TableIterator final : public Iterator {
+ public:
+  explicit TableIterator(const TableReader* owner) : owner_(owner) {
+    owner_->index_->ForEach([this](std::string_view key, std::string_view value, bool) {
+      BlockHandle handle;
+      handle.upper.assign(key.data(), key.size());
+      if (!DecodeBlockHandle(value, &handle.offset, &handle.size)) {
+        status_ = Status::Corruption("table iterator: bad block handle");
+        return false;
+      }
+      blocks_.push_back(std::move(handle));
+      return true;
+    });
+  }
+
+  bool Valid() const override { return valid_; }
+
+  void SeekToFirst() override {
+    status_ = Status::Ok();
+    LoadBlock(0);
+  }
+
+  void Seek(std::string_view target) override {
+    status_ = Status::Ok();
+
+    // 第一个 upper >= target 的块
+    std::size_t left = 0;
+    std::size_t right = blocks_.size();
+    while (left < right) {
+      const std::size_t mid = left + (right - left) / 2;
+      if (blocks_[mid].upper < target) {
+        left = mid + 1;
+      } else {
+        right = mid;
+      }
+    }
+
+    if (left >= blocks_.size()) {
+      valid_ = false;
+      return;
+    }
+
+    LoadBlock(left);
+    while (valid_ && entries_[entry_index_].key < target) {
+      Next();
+    }
+  }
+
+  void Next() override {
+    if (!valid_) {
+      return;
+    }
+    ++entry_index_;
+    if (entry_index_ < entries_.size()) {
+      return;
+    }
+    LoadBlock(block_index_ + 1);
+  }
+
+  std::string_view key() const override {
+    if (!valid_) {
+      return std::string_view();
+    }
+    return entries_[entry_index_].key;
+  }
+
+  std::string_view value() const override {
+    if (!valid_) {
+      return std::string_view();
+    }
+    return entries_[entry_index_].value;
+  }
+
+  bool IsDeleted() const override {
+    if (!valid_) {
+      return false;
+    }
+    return entries_[entry_index_].deleted;
+  }
+
+  Status status() const override { return status_; }
+
+ private:
+  struct BlockHandle {
+    std::uint64_t offset = 0;
+    std::uint64_t size = 0;
+    std::string upper;  // 该块最后一条 key
+  };
+
+  struct Entry {
+    std::string key;
+    std::string value;
+    bool deleted = false;
+  };
+
+  void LoadBlock(std::size_t index) {
+    entries_.clear();
+    entry_index_ = 0;
+    valid_ = false;
+
+    if (index >= blocks_.size()) {
+      return;
+    }
+    block_index_ = index;
+
+    std::string raw;
+    const Status read_status =
+        owner_->file_.Read(blocks_[index].offset, static_cast<std::size_t>(blocks_[index].size),
+                           &raw);
+    if (!read_status.ok()) {
+      status_ = read_status;
+      return;
+    }
+
+    Block block(std::move(raw));
+    if (!block.valid()) {
+      status_ = Status::Corruption("table iterator: invalid data block");
+      return;
+    }
+
+    const Status walk_status =
+        block.ForEach([this](std::string_view key, std::string_view value, bool deleted) {
+          Entry entry;
+          entry.key.assign(key.data(), key.size());
+          entry.value.assign(value.data(), value.size());
+          entry.deleted = deleted;
+          entries_.push_back(std::move(entry));
+          return true;
+        });
+    if (!walk_status.ok()) {
+      status_ = walk_status;
+      return;
+    }
+
+    if (entries_.empty()) {
+      LoadBlock(index + 1);  // 极端情况：空块，跳过
+      return;
+    }
+    valid_ = true;
+  }
+
+  const TableReader* owner_;
+  std::vector<BlockHandle> blocks_;
+  std::vector<Entry> entries_;
+  std::size_t block_index_ = 0;
+  std::size_t entry_index_ = 0;
+  bool valid_ = false;
+  Status status_;
+};
+
 std::unique_ptr<Iterator> TableReader::NewIterator() const {
-  // TODO(S4): 顺序遍历（Scan 与 Compaction 使用）
-  return nullptr;
+  return std::make_unique<TableIterator>(this);
 }
 
 }  // namespace minikv
