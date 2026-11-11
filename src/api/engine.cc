@@ -307,6 +307,14 @@ class EngineImpl : public Engine {
     return FlushLocked();
   }
 
+  Status Compact() override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+      return Status::Closed("engine is closed");
+    }
+    return CompactLocked();
+  }
+
   std::unique_ptr<Iterator> NewIterator() override {
     // TODO(S4): 合并 MemTable 与各层 SSTable 的迭代器
     return nullptr;

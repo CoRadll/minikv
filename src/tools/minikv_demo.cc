@@ -546,5 +546,220 @@ int RunDemoS2(const std::string& db_dir) {
   return checker.ok() ? 0 : 1;
 }
 
+int RunDemoS3(const std::string& db_dir) {
+  SetLogSink([](const std::string&) {});
+
+  Transcript out;
+  Checker checker(out);
+
+  const fs::path db_path(db_dir);
+  out.Separator();
+  out.Line(" MiniKV S3 Demo - Compaction");
+  out.Line(" data dir : " + db_path.string());
+  out.Line(" flush threshold : 2 KB    L0 compaction trigger : 4");
+  out.Separator();
+  out.Line("");
+
+  std::error_code ec;
+  fs::remove_all(db_path, ec);
+
+  Options options;
+  options.db_path = db_path;
+  options.sync_on_write = true;
+  options.memtable_size = 2048;
+  options.level0_compaction_trigger = 4;
+
+  std::unique_ptr<Engine> engine;
+  auto open_engine = [&]() -> bool {
+    engine.reset();
+    const Status status = Engine::Open(options, &engine);
+    checker.Check(status.ok(), "open engine: " + status.ToString());
+    return status.ok();
+  };
+
+  auto disk_snapshot = [&](std::uint64_t* bytes, int* files) {
+    const std::vector<DataFile> list = ListDataFiles(db_path);
+    *files = CountSstables(list);
+    *bytes = 0;
+    for (const DataFile& file : list) {
+      *bytes += file.size;
+    }
+  };
+
+  constexpr int kCount = 400;
+  constexpr int kDeleted = 50;
+
+  // ---------------------------------------------------------------------
+  out.Line("[1/7] open an empty database");
+  if (!open_engine()) {
+    return 1;
+  }
+  out.Line("  sstables : " + std::to_string(engine->GetStats().sstable_count));
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[2/7] write " + std::to_string(kCount) +
+           " entries (flush every ~2 KB, compact when L0 >= 4)");
+  {
+    int failed = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char value[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(value, sizeof(value), "value-%04dxxxxx", i);
+      if (!engine->Put(key, value).ok()) {
+        ++failed;
+      }
+    }
+    checker.Check(failed == 0, "all puts succeeded");
+
+    const EngineStats stats = engine->GetStats();
+    out.Line("  sstables after writes : " + std::to_string(stats.sstable_count));
+    checker.Check(stats.sstable_count <= 4,
+                  "auto compaction keeps L0 under the trigger (<= 4)");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  std::uint64_t bytes_before = 0;
+  int files_before = 0;
+  out.Line("[3/7] files before manual compaction");
+  {
+    disk_snapshot(&bytes_before, &files_before);
+    const std::vector<DataFile> list = ListDataFiles(db_path);
+    for (const DataFile& file : list) {
+      out.Line("  " + file.name + "  " + std::to_string(file.size) + " bytes");
+    }
+    out.Line("  total : " + std::to_string(files_before) + " files, " +
+             std::to_string(bytes_before) + " bytes");
+    checker.Check(files_before >= 1, "at least one sstable exists");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[4/7] compact all files into one");
+  {
+    const Status status = engine->Compact();
+    checker.Check(status.ok(), "compact: " + status.ToString());
+
+    std::uint64_t bytes_after = 0;
+    int files_after = 0;
+    disk_snapshot(&bytes_after, &files_after);
+    out.Line("  after compact : " + std::to_string(files_after) + " files, " +
+             std::to_string(bytes_after) + " bytes");
+    checker.Check(files_after == 1, "compaction leaves exactly one file");
+    checker.Check(bytes_after <= bytes_before, "compacted files are not larger");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[5/7] verify all " + std::to_string(kCount) + " entries after compaction");
+  {
+    int mismatches = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char expected[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(expected, sizeof(expected), "value-%04dxxxxx", i);
+      std::string value;
+      if (!engine->Get(key, &value).ok() || value != expected) {
+        ++mismatches;
+      }
+    }
+    out.Line("  mismatches = " + std::to_string(mismatches));
+    checker.Check(mismatches == 0, "no data lost during compaction");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[6/7] delete " + std::to_string(kDeleted) + " entries, flush, compact");
+  {
+    for (int i = 0; i < kDeleted; ++i) {
+      char key[32];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      checker.Check(engine->Delete(key).ok(), std::string("delete ") + key);
+    }
+    checker.Check(engine->Flush().ok(), "flush after deletes");
+    checker.Check(engine->Compact().ok(), "compact after deletes");
+
+    int resurrected = 0;
+    int lost = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::string value;
+      const Status status = engine->Get(key, &value);
+      if (i < kDeleted) {
+        if (!status.IsNotFound()) {
+          ++resurrected;
+        }
+      } else if (!status.ok()) {
+        ++lost;
+      }
+    }
+    out.Line("  resurrected = " + std::to_string(resurrected) + ", lost = " +
+             std::to_string(lost));
+
+    std::uint64_t bytes_after_delete = 0;
+    int files_after_delete = 0;
+    disk_snapshot(&bytes_after_delete, &files_after_delete);
+    out.Line("  files = " + std::to_string(files_after_delete) + ", bytes = " +
+             std::to_string(bytes_after_delete));
+
+    checker.Check(resurrected == 0, "deleted keys do not come back");
+    checker.Check(lost == 0, "remaining keys are intact");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[7/7] restart and summary");
+  {
+    checker.Check(engine->Close().ok(), "close engine");
+    if (!open_engine()) {
+      return 1;
+    }
+
+    int lost = 0;
+    int resurrected = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::string value;
+      const Status status = engine->Get(key, &value);
+      if (i < kDeleted) {
+        if (!status.IsNotFound()) {
+          ++resurrected;
+        }
+      } else if (!status.ok()) {
+        ++lost;
+      }
+    }
+    checker.Check(lost == 0 && resurrected == 0, "restart keeps the compacted state");
+
+    std::uint64_t total_bytes = 0;
+    int files = 0;
+    disk_snapshot(&total_bytes, &files);
+    out.Line("  sstables   : " + std::to_string(files));
+    out.Line("  on disk    : " + std::to_string(total_bytes) + " bytes");
+    out.Line("  wal bytes  : " + std::to_string(engine->GetStats().wal_bytes));
+    checker.Check(engine->Close().ok(), "final close");
+  }
+
+  out.Line("");
+  out.Separator();
+  char summary[256];
+  std::snprintf(summary, sizeof(summary), " result: %d/%d checks passed  (%s)", checker.passed(),
+                checker.checks(), checker.ok() ? "OK" : "FAILED");
+  out.Line(summary);
+  out.Separator();
+
+  const fs::path transcript_path = "demo/s3-transcript.txt";
+  const bool saved = out.Save(transcript_path);
+  std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
+              saved ? "" : " (FAILED)");
+
+  return checker.ok() ? 0 : 1;
+}
+
 }  // namespace tools
 }  // namespace minikv

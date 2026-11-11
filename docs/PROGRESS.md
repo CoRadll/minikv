@@ -14,8 +14,9 @@ MiniKV：C++20 从零实现的 LSM-Tree KV 存储引擎。位置 `D:\Users\72673
 | S0 | CMake/presets、警告与 ASan 模块、脚本（build/test/check_layout，PS5.1 兼容）、CI、目录同构 |
 | S1 | Status、日志、CRC32C、varint/fixed、File/Env、WAL 格式/写/回放、MemTable、Engine、CLI、集成测试、`demo s1` |
 | S2 | 块格式（前缀压缩+重启点）、SSTable 写读、Manifest、刷盘链路、崩溃边界、`demo s2`、Arena + 跳表替换 `std::map` |
+| S3 | 顺序迭代器、多路归并、L0+L1 全量合并、墓碑清理、MANIFEST 原子安装、`demo s3` |
 
-当前测试：**98 个全绿**，0 警告（Debug + RelWithDebInfo）。
+当前测试：**168 个全绿**，0 警告（Debug + RelWithDebInfo）。
 
 ## 关键约定（不要推翻）
 
@@ -32,8 +33,6 @@ MiniKV：C++20 从零实现的 LSM-Tree KV 存储引擎。位置 `D:\Users\72673
 
 | 阶段 | 任务 |
 |---|---|
-| S3 | Compaction（L0 重叠收敛、多版本去重、墓碑清理） |
-| S3 | Compaction（L0 重叠收敛、多版本去重、墓碑清理） |
 | S4 | 布隆过滤器、块缓存、MergeIterator / `scan` |
 | S5 | 压测工具、真实 kill -9、吞吐与 P99 指标、`demo s5` |
 

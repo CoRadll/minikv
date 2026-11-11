@@ -35,6 +35,9 @@ class Engine {
   // 把当前内存表刷成 SSTable（用于测试与演示；平时由阈值自动触发）。
   virtual Status Flush() = 0;
 
+  // 立即合并所有可合并的文件（演示与运维用；平时由 L0 文件数阈值自动触发）。
+  virtual Status Compact() = 0;
+
   // TODO(S5): 范围扫描，返回 [begin, end) 的有序视图。
   virtual std::unique_ptr<Iterator> NewIterator() = 0;
 
