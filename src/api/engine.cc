@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "minikv/db/compaction.h"
 #include "minikv/db/manifest.h"
 #include "minikv/memtable/memtable.h"
 #include "minikv/table/table_builder.h"
@@ -41,6 +42,12 @@ Status ValidateKeyValue(std::string_view key, std::string_view value) {
   return Status::Ok();
 }
 
+struct OpenTable {
+  std::uint64_t file_number = 0;
+  int level = 0;
+  std::unique_ptr<TableReader> reader;
+};
+
 std::string SstableFileName(std::uint64_t file_number) {
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "%06llu.sst",
@@ -49,8 +56,7 @@ std::string SstableFileName(std::uint64_t file_number) {
 }
 
 // 只认 6 位数字 + ".sst"，其余文件一律忽略（避免误删用户文件）
-bool ParseSstableFileName(const std::string& name, std::uint64_t* number) {
-  if (name.size() != 10 || name.compare(6, 4, ".sst") != 0) {
+bool ParseSstableFileName(const std::string& name, std::uint64_t* number) {  if (name.size() != 10 || name.compare(6, 4, ".sst") != 0) {
     return false;
   }
   std::uint64_t value = 0;
@@ -158,7 +164,11 @@ class EngineImpl : public Engine {
         return Status::Corruption("cannot open sstable " + table_path.string() + ": " +
                                   status.ToString());
       }
-      tables_.push_back(std::move(reader));
+      OpenTable table;
+      table.file_number = it->file_number;
+      table.level = it->level;
+      table.reader = std::move(reader);
+      tables_.push_back(std::move(table));
     }
 
     // 2) 再回放 WAL（只包含最后一次刷盘之后的写入）
@@ -277,7 +287,7 @@ class EngineImpl : public Engine {
     // 3) 从新到旧查 SSTable
     for (const auto& table : tables_) {
       bool deleted = false;
-      const Status status = table->Get(key, value, &deleted);
+      const Status status = table.reader->Get(key, value, &deleted);
       if (status.ok()) {
         return deleted ? Status::NotFound() : Status::Ok();
       }
@@ -385,7 +395,11 @@ class EngineImpl : public Engine {
       return status;
     }
 
-    tables_.insert(tables_.begin(), std::move(reader));
+    OpenTable table;
+    table.file_number = file_number;
+    table.level = 0;
+    table.reader = std::move(reader);
+    tables_.insert(tables_.begin(), std::move(table));
 
     // 4) 数据已在 SSTable + MANIFEST 中，WAL 可以清空。
     //    若在清空 WAL 之前崩溃，重放这些记录是幂等的，不会产生错误数据。
@@ -396,6 +410,98 @@ class EngineImpl : public Engine {
 
     imm_.reset();
     LOG_INFO("flushed memtable to " + table_path.string());
+
+    // 5) L0 文件数达到阈值就合并
+    return MaybeCompactLocked();
+  }
+
+  Status MaybeCompactLocked() {
+    std::size_t level0_files = 0;
+    for (const OpenTable& table : tables_) {
+      if (table.level == 0) {
+        ++level0_files;
+      }
+    }
+    if (level0_files < options_.level0_compaction_trigger) {
+      return Status::Ok();
+    }
+    return CompactLocked();
+  }
+
+  // 两层简化模型：把所有 L0 + L1 全量合并成一个 L1 文件。
+  //
+  // 事务顺序：写新文件 → 更新 MANIFEST（原子替换）→ 换内存视图 → 删旧文件。
+  // 任何一步失败都保留旧版本可用；崩溃最多留下一个孤儿文件（启动时清理）。
+  Status CompactLocked() {
+    std::vector<const TableReader*> inputs;
+    std::vector<std::uint64_t> old_file_numbers;
+
+    for (const OpenTable& table : tables_) {
+      if (table.level <= 1) {
+        inputs.push_back(table.reader.get());
+        old_file_numbers.push_back(table.file_number);
+      }
+    }
+    if (inputs.size() < 2) {
+      return Status::Ok();  // 没有可合并的对象
+    }
+
+    const std::uint64_t output_number = manifest_.next_file_number();
+    const std::filesystem::path output_path =
+        options_.db_path / SstableFileName(output_number);
+
+    CompactionResult result;
+    Status status = Compaction::Run(inputs, output_number, output_path, &result);
+    if (!status.ok()) {
+      LOG_ERROR("compaction failed: " + status.ToString());
+      return status;
+    }
+
+    // 安装新 MANIFEST：清空后只写一个 L1 文件（若没有有效数据则不写）
+    manifest_.ClearFiles();
+    if (result.has_output) {
+      status = manifest_.AddFile(1, result.file_number, result.smallest_key, result.largest_key);
+      if (status.ok()) {
+        status = manifest_.Save();
+      }
+      if (!status.ok()) {
+        return status;
+      }
+    } else {
+      status = manifest_.Save();
+      if (!status.ok()) {
+        return status;
+      }
+    }
+
+    // 换内存视图：参与合并的文件全部移除，换成新文件（新文件在最前）
+    std::vector<OpenTable> updated;
+    updated.reserve(1);
+    if (result.has_output) {
+      std::unique_ptr<TableReader> reader;
+      status = TableReader::Open(output_path, &reader);
+      if (!status.ok()) {
+        return status;
+      }
+      OpenTable table;
+      table.file_number = result.file_number;
+      table.level = 1;
+      table.reader = std::move(reader);
+      updated.push_back(std::move(table));
+    }
+    tables_ = std::move(updated);
+
+    // 旧文件已不在 MANIFEST 中，可以安全删除
+    for (const std::uint64_t number : old_file_numbers) {
+      Status remove_status = RemoveFile(options_.db_path / SstableFileName(number));
+      if (!remove_status.ok()) {
+        LOG_WARN("failed to remove old sstable: " + remove_status.ToString());
+      }
+    }
+
+    LOG_INFO("compacted " + std::to_string(inputs.size()) + " files into " +
+             (result.has_output ? output_path.string() : std::string("<empty>")) + ", entries = " +
+             std::to_string(result.entries));
     return Status::Ok();
   }
 
@@ -427,7 +533,7 @@ class EngineImpl : public Engine {
   Manifest manifest_;
   std::unique_ptr<MemTable> mem_;
   std::unique_ptr<MemTable> imm_;
-  std::vector<std::unique_ptr<TableReader>> tables_;  // 新文件在前
+  std::vector<OpenTable> tables_;  // 新文件在前
   std::unique_ptr<WalWriter> wal_;
   mutable std::mutex mutex_;
   bool closed_ = false;

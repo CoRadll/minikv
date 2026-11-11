@@ -16,16 +16,20 @@
 
 namespace {
 
-minikv::Options MakeOptions(const std::filesystem::path& db_path) {
+minikv::Options MakeOptions(const std::filesystem::path& db_path,
+                            std::size_t level0_trigger = 4) {
   minikv::Options options;
   options.db_path = db_path;
   options.sync_on_write = false;
+  options.level0_compaction_trigger = level0_trigger;
   return options;
 }
 
-std::unique_ptr<minikv::Engine> OpenEngine(const std::filesystem::path& db_path) {
+std::unique_ptr<minikv::Engine> OpenEngine(const std::filesystem::path& db_path,
+                                           std::size_t level0_trigger = 4) {
   std::unique_ptr<minikv::Engine> engine;
-  const minikv::Status status = minikv::Engine::Open(MakeOptions(db_path), &engine);
+  const minikv::Status status =
+      minikv::Engine::Open(MakeOptions(db_path, level0_trigger), &engine);
   return status.ok() ? std::move(engine) : nullptr;
 }
 
@@ -127,9 +131,11 @@ TEST(MultiFile, ManyFilesSurviveRestart) {
   REQUIRE_TRUE(dir.ok());
   const auto db_path = dir / "db";
 
+  // 这个用例专门验证"多文件加载"，所以把合并阈值调高，避免文件被合并掉
+  constexpr std::size_t kNoCompaction = 1000;
   constexpr int kRounds = 12;
   {
-    auto engine = OpenEngine(db_path);
+    auto engine = OpenEngine(db_path, kNoCompaction);
     REQUIRE_TRUE(engine != nullptr);
     for (int i = 0; i < kRounds; ++i) {
       REQUIRE_OK(engine->Put("key" + std::to_string(i), "value" + std::to_string(i)));
@@ -138,7 +144,7 @@ TEST(MultiFile, ManyFilesSurviveRestart) {
     REQUIRE_OK(engine->Close());
   }
 
-  auto engine = OpenEngine(db_path);
+  auto engine = OpenEngine(db_path, kNoCompaction);
   REQUIRE_TRUE(engine != nullptr);
   CHECK_EQ(engine->GetStats().sstable_count, static_cast<std::size_t>(kRounds));
 

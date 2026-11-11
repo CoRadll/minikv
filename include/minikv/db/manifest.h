@@ -24,6 +24,10 @@ class Manifest {
   static Status Load(const std::filesystem::path& path, Manifest* out);
 
   Status AddFile(int level, uint64_t file_number, std::string smallest, std::string largest);
+
+  // 清空文件列表（Compaction 安装新版本时用）；文件编号分配不受影响
+  void ClearFiles() { files_.clear(); }
+
   Status Save();
 
   const std::vector<FileMeta>& files() const { return files_; }
