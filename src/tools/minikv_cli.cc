@@ -182,6 +182,56 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (command == "scan") {
+      // 语法：scan [start] [limit]
+      std::string start;
+      std::string limit_text;
+      std::string extra;
+      if (!SplitFirstToken(rest, &start, &limit_text)) {
+        start.clear();
+      } else if (!SplitFirstToken(limit_text, &limit_text, &extra)) {
+        // 只有 start
+      }
+
+      int limit = 20;
+      if (!limit_text.empty()) {
+        const int parsed = std::atoi(limit_text.c_str());
+        if (parsed > 0) {
+          limit = parsed;
+        }
+      }
+
+      std::unique_ptr<minikv::Iterator> it = engine->NewIterator();
+      if (it == nullptr) {
+        std::printf("ERR: scan is not available\n");
+        continue;
+      }
+
+      if (start.empty()) {
+        it->SeekToFirst();
+      } else {
+        it->Seek(start);
+      }
+
+      int printed = 0;
+      while (it->Valid() && printed < limit) {
+        std::printf("\"%s\" = \"%s\"\n", std::string(it->key()).c_str(),
+                    std::string(it->value()).c_str());
+        it->Next();
+        ++printed;
+      }
+
+      if (printed == 0) {
+        std::printf("(empty)\n");
+      } else if (it->Valid()) {
+        std::printf("... (%d shown, more available)\n", printed);
+      }
+      if (!it->status().ok()) {
+        std::printf("%s\n", it->status().ToString().c_str());
+      }
+      continue;
+    }
+
     std::string key;
     std::string value;
 

@@ -14,6 +14,7 @@
 #include "minikv/db/compaction.h"
 #include "minikv/db/manifest.h"
 #include "minikv/memtable/memtable.h"
+#include "minikv/table/merging_iterator.h"
 #include "minikv/table/table_builder.h"
 #include "minikv/table/table_reader.h"
 #include "minikv/util/env.h"
@@ -45,7 +46,7 @@ Status ValidateKeyValue(std::string_view key, std::string_view value) {
 struct OpenTable {
   std::uint64_t file_number = 0;
   int level = 0;
-  std::unique_ptr<TableReader> reader;
+  std::shared_ptr<TableReader> reader;
 };
 
 std::string SstableFileName(std::uint64_t file_number) {
@@ -115,6 +116,138 @@ Status RemoveOrphanSstables(const std::filesystem::path& dir, const Manifest& ma
   return Status::Ok();
 }
 
+// ---------------------------------------------------------------------------
+// 扫描相关：内存表的快照迭代器 + 去重/去墓碑的包装迭代器
+// ---------------------------------------------------------------------------
+
+class VectorIterator final : public Iterator {
+ public:
+  struct Entry {
+    std::string key;
+    std::string value;
+    bool deleted = false;
+  };
+
+  explicit VectorIterator(std::vector<Entry> entries) : entries_(std::move(entries)) {}
+
+  bool Valid() const override { return index_ < entries_.size(); }
+  void SeekToFirst() override { index_ = 0; }
+
+  void Seek(std::string_view target) override {
+    index_ = 0;
+    while (index_ < entries_.size() && entries_[index_].key < target) {
+      ++index_;
+    }
+  }
+
+  void Next() override {
+    if (index_ < entries_.size()) {
+      ++index_;
+    }
+  }
+
+  std::string_view key() const override {
+    return Valid() ? std::string_view(entries_[index_].key) : std::string_view();
+  }
+
+  std::string_view value() const override {
+    return Valid() ? std::string_view(entries_[index_].value) : std::string_view();
+  }
+
+  bool IsDeleted() const override { return Valid() && entries_[index_].deleted; }
+
+  Status status() const override { return Status::Ok(); }
+
+ private:
+  std::vector<Entry> entries_;
+  std::size_t index_ = 0;
+};
+
+// 内存表是可变结构，扫描时先做一份有序快照，避免遍历期间被写入打断
+std::unique_ptr<Iterator> MakeMemTableIterator(const MemTable* table) {
+  std::vector<VectorIterator::Entry> entries;
+  table->ForEachInOrder([&entries](std::string_view key, std::string_view value, bool deleted) {
+    entries.push_back(VectorIterator::Entry{std::string(key), std::string(value), deleted});
+    return true;
+  });
+  return std::make_unique<VectorIterator>(std::move(entries));
+}
+
+// 归并结果再去重、去墓碑：
+//   - 同一个 key 只输出最新版本（归并器保证新的在前）
+//   - 墓碑不输出（对调用方来说 key 就是不存在）
+// keepalive 持有 TableReader，防止扫描期间合并把文件关掉
+class ScanIterator final : public Iterator {
+ public:
+  ScanIterator(std::unique_ptr<Iterator> merged,
+               std::vector<std::shared_ptr<TableReader>> keepalive)
+      : merged_(std::move(merged)), keepalive_(std::move(keepalive)) {}
+
+  bool Valid() const override { return valid_; }
+
+  void SeekToFirst() override {
+    merged_->SeekToFirst();
+    last_emitted_.clear();
+    Refresh();
+  }
+
+  void Seek(std::string_view target) override {
+    merged_->Seek(target);
+    last_emitted_.clear();
+    Refresh();
+  }
+
+  void Next() override {
+    if (!valid_) {
+      return;
+    }
+    last_emitted_.assign(merged_->key());
+    merged_->Next();
+    Refresh();
+  }
+
+  std::string_view key() const override {
+    return valid_ ? merged_->key() : std::string_view();
+  }
+
+  std::string_view value() const override {
+    return valid_ ? merged_->value() : std::string_view();
+  }
+
+  bool IsDeleted() const override { return false; }  // 墓碑已被跳过
+
+  Status status() const override { return merged_->status(); }
+
+ private:
+  void Refresh() {
+    while (merged_->Valid()) {
+      const std::string_view current = merged_->key();
+
+      // 比已输出 key 更小或相等：都是同一个 key 的旧版本
+      if (!last_emitted_.empty() && current <= last_emitted_) {
+        merged_->Next();
+        continue;
+      }
+
+      if (merged_->IsDeleted()) {
+        // 墓碑是该 key 的最新状态：记下来，后续旧版本一律跳过
+        last_emitted_.assign(merged_->key());
+        merged_->Next();
+        continue;
+      }
+
+      valid_ = true;
+      return;
+    }
+    valid_ = false;
+  }
+
+  std::unique_ptr<Iterator> merged_;
+  std::vector<std::shared_ptr<TableReader>> keepalive_;
+  std::string last_emitted_;
+  bool valid_ = false;
+};
+
 }  // namespace
 
 class EngineImpl : public Engine {
@@ -167,7 +300,7 @@ class EngineImpl : public Engine {
       OpenTable table;
       table.file_number = it->file_number;
       table.level = it->level;
-      table.reader = std::move(reader);
+      table.reader = std::shared_ptr<TableReader>(std::move(reader));
       tables_.push_back(std::move(table));
     }
 
@@ -316,8 +449,28 @@ class EngineImpl : public Engine {
   }
 
   std::unique_ptr<Iterator> NewIterator() override {
-    // TODO(S4): 合并 MemTable 与各层 SSTable 的迭代器
-    return nullptr;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+      return nullptr;
+    }
+
+    std::vector<std::unique_ptr<Iterator>> children;
+    std::vector<std::shared_ptr<TableReader>> keepalive;
+
+    // 顺序即优先级：当前内存表 > 刷盘中的内存表 > 新文件 > 旧文件
+    if (mem_ != nullptr) {
+      children.push_back(MakeMemTableIterator(mem_.get()));
+    }
+    if (imm_ != nullptr) {
+      children.push_back(MakeMemTableIterator(imm_.get()));
+    }
+    for (const OpenTable& table : tables_) {
+      children.push_back(table.reader->NewIterator());
+      keepalive.push_back(table.reader);
+    }
+
+    return std::make_unique<ScanIterator>(
+        std::make_unique<MergingIterator>(std::move(children)), std::move(keepalive));
   }
 
   EngineStats GetStats() const override {
@@ -406,7 +559,7 @@ class EngineImpl : public Engine {
     OpenTable table;
     table.file_number = file_number;
     table.level = 0;
-    table.reader = std::move(reader);
+    table.reader = std::shared_ptr<TableReader>(std::move(reader));
     tables_.insert(tables_.begin(), std::move(table));
 
     // 4) 数据已在 SSTable + MANIFEST 中，WAL 可以清空。
@@ -494,7 +647,7 @@ class EngineImpl : public Engine {
       OpenTable table;
       table.file_number = result.file_number;
       table.level = 1;
-      table.reader = std::move(reader);
+      table.reader = std::shared_ptr<TableReader>(std::move(reader));
       updated.push_back(std::move(table));
     }
     tables_ = std::move(updated);
