@@ -37,6 +37,7 @@ class TableReader {
   std::filesystem::path path_;
   File file_;
   std::unique_ptr<Block> index_;
+  std::string filter_;  // Bloom filter 原始字节（为空则不做过滤）
   std::uint64_t file_size_ = 0;
 };
 

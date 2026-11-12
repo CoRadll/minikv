@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "minikv/table/block_builder.h"
 #include "minikv/util/file.h"
@@ -42,10 +43,11 @@ class TableBuilder {
   Status FlushBlock();
 
   std::filesystem::path path_;
-  std::size_t block_size_;
+  std::uint64_t block_size_;
   File file_;
   BlockBuilder data_builder_;
   BlockBuilder index_builder_;
+  std::vector<std::string> keys_;  // 供 Finish 时构建 Bloom filter
   std::uint64_t file_size_ = 0;
   std::uint64_t num_entries_ = 0;
   std::uint64_t num_data_blocks_ = 0;

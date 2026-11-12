@@ -148,6 +148,7 @@ add_executable(minikv_tests
   tests/unit/table/block_test.cc
   tests/unit/table/table_builder_test.cc
   tests/unit/table/table_reader_test.cc
+  tests/unit/table/bloom_test.cc
   tests/unit/table/table_iterator_test.cc
   tests/unit/table/merging_iterator_test.cc)
 target_link_libraries(minikv_tests PRIVATE minikv_core)

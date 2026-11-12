@@ -19,6 +19,10 @@ class BloomFilter {
   // 序列化后的位数组，随 SSTable 一起落盘。
   std::string Finish() const;
 
+  // 直接查询落盘格式的过滤器（TableReader 用）。
+  // 返回 false 表示该 key 一定不在文件中；返回 true 表示可能存在（需真正查找）。
+  static bool MayContainIn(std::string_view filter_data, std::string_view key);
+
  private:
   std::string bits_;
   std::size_t hash_count_ = 7;

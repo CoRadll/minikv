@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility>
 
+#include "minikv/table/bloom.h"
 #include "minikv/table/format.h"
 #include "minikv/util/coding.h"
 
@@ -55,6 +56,7 @@ Status TableBuilder::Add(std::string_view key, std::string_view value, bool dele
   last_key_.assign(key.data(), key.size());
 
   data_builder_.Add(key, value, deleted);
+  keys_.push_back(std::string(key));
   ++num_entries_;
 
   if (data_builder_.CurrentSizeEstimate() >= block_size_) {
@@ -102,6 +104,24 @@ Status TableBuilder::Finish() {
     return status;
   }
 
+  // 先写 Bloom filter，再写索引：读路径可以用 filter 跳过整个文件
+  std::uint64_t filter_offset = 0;
+  std::uint64_t filter_size = 0;
+  if (!keys_.empty()) {
+    BloomFilter bloom(keys_.size());
+    for (const std::string& key : keys_) {
+      bloom.Add(key);
+    }
+    const std::string filter_raw = bloom.Finish();
+    filter_offset = file_size_;
+    status = file_.Append(filter_raw);
+    if (!status.ok()) {
+      return status;
+    }
+    file_size_ += filter_raw.size();
+    filter_size = filter_raw.size();
+  }
+
   const std::string index_raw = index_builder_.Finish();
   const std::uint64_t index_offset = file_size_;
   status = file_.Append(index_raw);
@@ -113,8 +133,8 @@ Status TableBuilder::Finish() {
   TableFooter footer;
   footer.index_offset = index_offset;
   footer.index_size = index_raw.size();
-  footer.filter_offset = 0;  // S4 才写
-  footer.filter_size = 0;
+  footer.filter_offset = filter_offset;
+  footer.filter_size = filter_size;
 
   const std::string footer_raw = EncodeFooter(footer);
   status = file_.Append(footer_raw);

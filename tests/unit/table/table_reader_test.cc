@@ -221,3 +221,21 @@ TEST(TableReader, RejectsMissingFile) {
   CHECK_FALSE(status.ok());
   CHECK_EQ(status.code(), minikv::StatusCode::kIOError);
 }
+
+TEST(TableReader, SstableCarriesBloomFilter) {
+  minikv::test::TempDir dir;
+  REQUIRE_TRUE(dir.ok());
+  const auto path = BuildTable(dir.path(), 100);
+
+  const std::string content = ReadWholeFile(path);
+  REQUIRE_TRUE(content.size() > minikv::kTableFooterSize);
+
+  minikv::TableFooter footer;
+  REQUIRE_TRUE(minikv::DecodeFooter(
+      std::string_view(content).substr(content.size() - minikv::kTableFooterSize), &footer));
+
+  // 写文件时应把 Bloom filter 一并写进去，并记录在 footer 里
+  CHECK_TRUE(footer.filter_size > 0);
+  CHECK_TRUE(footer.filter_offset < footer.index_offset);
+  CHECK_TRUE(footer.filter_offset + footer.filter_size <= footer.index_offset);
+}

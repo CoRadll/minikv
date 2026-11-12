@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "minikv/table/bloom.h"
 #include "minikv/table/format.h"
 #include "minikv/util/coding.h"
 
@@ -81,6 +82,19 @@ Status TableReader::Open(const std::filesystem::path& path,
   }
   table->index_ = std::move(index);
 
+  // 读 Bloom filter（旧文件可能没有，filter_size == 0）
+  if (footer.filter_size > 0) {
+    if (footer.filter_offset > footer_start ||
+        footer.filter_size > footer_start - footer.filter_offset) {
+      return Status::Corruption("filter out of range: " + path.string());
+    }
+    status = table->file_.Read(footer.filter_offset, static_cast<std::size_t>(footer.filter_size),
+                               &table->filter_);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+
   *reader = std::move(table);
   return Status::Ok();
 }
@@ -88,6 +102,11 @@ Status TableReader::Open(const std::filesystem::path& path,
 Status TableReader::Get(std::string_view key, std::string* value, bool* deleted) const {
   if (!index_) {
     return Status::Corruption("table reader is not open");
+  }
+
+  // 0) Bloom filter 快速否定：返回 false 时 key 一定不在这个文件里
+  if (!filter_.empty() && !BloomFilter::MayContainIn(filter_, key)) {
+    return Status::NotFound();
   }
 
   // 1) 索引块里找第一个上界 key >= target 的数据块
