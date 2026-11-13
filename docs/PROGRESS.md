@@ -15,8 +15,9 @@ MiniKV：C++20 从零实现的 LSM-Tree KV 存储引擎。位置 `D:\Users\72673
 | S1 | Status、日志、CRC32C、varint/fixed、File/Env、WAL 格式/写/回放、MemTable、Engine、CLI、集成测试、`demo s1` |
 | S2 | 块格式（前缀压缩+重启点）、SSTable 写读、Manifest、刷盘链路、崩溃边界、`demo s2`、Arena + 跳表替换 `std::map` |
 | S3 | 顺序迭代器、多路归并、L0+L1 全量合并、墓碑清理、MANIFEST 原子安装、`demo s3` |
+| S4 | Bloom filter、LRU 块缓存、跨层有序扫描、`scan` 命令、`demo s4` |
 
-当前测试：**168 个全绿**，0 警告（Debug + RelWithDebInfo）。
+当前测试：**187 个全绿**，0 警告（Debug + RelWithDebInfo）。
 
 ## 关键约定（不要推翻）
 

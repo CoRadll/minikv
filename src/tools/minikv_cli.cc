@@ -29,6 +29,7 @@ namespace tools {
 int RunDemoS1(const std::string& db_dir);
 int RunDemoS2(const std::string& db_dir);
 int RunDemoS3(const std::string& db_dir);
+int RunDemoS4(const std::string& db_dir);
 }  // namespace tools
 }  // namespace minikv
 
@@ -36,7 +37,7 @@ namespace {
 
 void PrintUsage() {
   std::printf("usage: minikv [--dir <path>] [--verbose] [--help] [--version]\n");
-  std::printf("       minikv demo <s1|s2|s3> [--dir <path>]\n");
+  std::printf("       minikv demo <s1|s2|s3|s4> [--dir <path>]\n");
   std::printf("\n");
   std::printf("commands:\n");
   std::printf("  put <key> <value>   write or overwrite a key\n");
@@ -80,8 +81,8 @@ int main(int argc, char** argv) {
   // 子命令：minikv demo <s1|s2> [--dir <path>]
   if (argc >= 2 && std::string_view(argv[1]) == "demo") {
     const std::string phase = (argc >= 3) ? std::string(argv[2]) : std::string();
-    if (phase != "s1" && phase != "s2" && phase != "s3") {
-      std::fprintf(stderr, "unknown demo phase: %s (supported: s1, s2, s3)\n",
+    if (phase != "s1" && phase != "s2" && phase != "s3" && phase != "s4") {
+      std::fprintf(stderr, "unknown demo phase: %s (supported: s1, s2, s3, s4)\n",
                    phase.empty() ? "<none>" : phase.c_str());
       return 2;
     }
@@ -103,7 +104,10 @@ int main(int argc, char** argv) {
     if (phase == "s2") {
       return minikv::tools::RunDemoS2(demo_dir);
     }
-    return minikv::tools::RunDemoS3(demo_dir);
+    if (phase == "s3") {
+      return minikv::tools::RunDemoS3(demo_dir);
+    }
+    return minikv::tools::RunDemoS4(demo_dir);
   }
 
   std::string db_path = "data";

@@ -18,6 +18,9 @@ struct EngineStats {
   std::size_t memtable_entries = 0;   // 内存表条目数（含墓碑）
   std::size_t memtable_bytes = 0;     // 内存表近似占用
   std::size_t sstable_count = 0;      // 已落盘的 SSTable 数量
+  std::uint64_t block_cache_hits = 0;
+  std::uint64_t block_cache_misses = 0;
+  std::uint64_t block_cache_bytes = 0;
 };
 
 // 对外唯一门面。调用方不需要知道 WAL、SSTable、Compaction 的存在。

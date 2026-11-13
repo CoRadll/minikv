@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "minikv/cache/lru_cache.h"
 #include "minikv/db/compaction.h"
 #include "minikv/db/manifest.h"
 #include "minikv/memtable/memtable.h"
@@ -266,6 +267,10 @@ class EngineImpl : public Engine {
       return status;
     }
 
+    if (options_.block_cache_size > 0) {
+      block_cache_ = std::make_shared<LruCache>(options_.block_cache_size);
+    }
+
     wal_path_ = options_.db_path / kWalFileName;
     manifest_path_ = options_.db_path / kManifestFileName;
 
@@ -301,6 +306,7 @@ class EngineImpl : public Engine {
       table.file_number = it->file_number;
       table.level = it->level;
       table.reader = std::shared_ptr<TableReader>(std::move(reader));
+      table.reader->SetBlockCache(block_cache_.get(), table.file_number);
       tables_.push_back(std::move(table));
     }
 
@@ -484,6 +490,11 @@ class EngineImpl : public Engine {
       stats.memtable_bytes = mem_->ApproximateSize();
     }
     stats.sstable_count = tables_.size();
+    if (block_cache_ != nullptr) {
+      stats.block_cache_hits = block_cache_->hits();
+      stats.block_cache_misses = block_cache_->misses();
+      stats.block_cache_bytes = block_cache_->UsedBytes();
+    }
     return stats;
   }
 
@@ -560,6 +571,7 @@ class EngineImpl : public Engine {
     table.file_number = file_number;
     table.level = 0;
     table.reader = std::shared_ptr<TableReader>(std::move(reader));
+    table.reader->SetBlockCache(block_cache_.get(), table.file_number);
     tables_.insert(tables_.begin(), std::move(table));
 
     // 4) 数据已在 SSTable + MANIFEST 中，WAL 可以清空。
@@ -648,6 +660,7 @@ class EngineImpl : public Engine {
       table.file_number = result.file_number;
       table.level = 1;
       table.reader = std::shared_ptr<TableReader>(std::move(reader));
+      table.reader->SetBlockCache(block_cache_.get(), table.file_number);
       updated.push_back(std::move(table));
     }
     tables_ = std::move(updated);
@@ -692,6 +705,7 @@ class EngineImpl : public Engine {
   std::filesystem::path wal_path_;
   std::filesystem::path manifest_path_;
   Manifest manifest_;
+  std::shared_ptr<LruCache> block_cache_;
   std::unique_ptr<MemTable> mem_;
   std::unique_ptr<MemTable> imm_;
   std::vector<OpenTable> tables_;  // 新文件在前

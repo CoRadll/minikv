@@ -143,6 +143,7 @@ add_executable(minikv_tests
   tests/unit/db/flush_test.cc
   tests/unit/db/compaction_test.cc
   tests/unit/db/scan_test.cc
+  tests/unit/cache/lru_cache_test.cc
   tests/integration/recovery_test.cc
   tests/integration/crash_boundary_test.cc
   tests/integration/multi_file_test.cc

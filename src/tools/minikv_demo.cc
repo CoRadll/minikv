@@ -761,5 +761,174 @@ int RunDemoS3(const std::string& db_dir) {
   return checker.ok() ? 0 : 1;
 }
 
+int RunDemoS4(const std::string& db_dir) {
+  SetLogSink([](const std::string&) {});
+
+  Transcript out;
+  Checker checker(out);
+
+  const fs::path db_path(db_dir);
+  out.Separator();
+  out.Line(" MiniKV S4 Demo - Bloom filter + block cache + scan");
+  out.Line(" data dir : " + db_path.string());
+  out.Line(" flush threshold : 2 KB    block cache : 64 KB");
+  out.Separator();
+  out.Line("");
+
+  std::error_code ec;
+  fs::remove_all(db_path, ec);
+
+  Options options;
+  options.db_path = db_path;
+  options.sync_on_write = true;
+  options.memtable_size = 2048;
+  options.level0_compaction_trigger = 4;
+  options.block_cache_size = 64 * 1024;
+
+  constexpr int kCount = 200;
+  constexpr int kMissing = 50;
+
+  std::unique_ptr<Engine> engine;
+  const Status open_status = Engine::Open(options, &engine);
+  checker.Check(open_status.ok(), "open engine: " + open_status.ToString());
+  if (!open_status.ok()) {
+    return 1;
+  }
+
+  // ---------------------------------------------------------------------
+  out.Line("[1/6] write " + std::to_string(kCount) + " entries and compact");
+  {
+    int failed = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char value[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(value, sizeof(value), "value-%04dxxxxx", i);
+      if (!engine->Put(key, value).ok()) {
+        ++failed;
+      }
+    }
+    checker.Check(failed == 0, "all puts succeeded");
+    checker.Check(engine->Compact().ok(), "compact");
+
+    const EngineStats stats = engine->GetStats();
+    out.Line("  sstables : " + std::to_string(stats.sstable_count));
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[2/6] first read pass (cold block cache)");
+  const EngineStats before = engine->GetStats();
+  {
+    int mismatches = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      char expected[48];
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      std::snprintf(expected, sizeof(expected), "value-%04dxxxxx", i);
+      std::string value;
+      if (!engine->Get(key, &value).ok() || value != expected) {
+        ++mismatches;
+      }
+    }
+    checker.Check(mismatches == 0, "all values correct");
+    out.Line("  block cache hits/misses : " + std::to_string(before.block_cache_hits) + " / " +
+             std::to_string(before.block_cache_misses));
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[3/6] second read pass (warm block cache)");
+  const EngineStats after_first_pass = engine->GetStats();
+  {
+    int mismatches = 0;
+    for (int i = 0; i < kCount; ++i) {
+      char key[32];
+      std::string value;
+      std::snprintf(key, sizeof(key), "user:%04d", i);
+      if (!engine->Get(key, &value).ok()) {
+        ++mismatches;
+      }
+    }
+    checker.Check(mismatches == 0, "second pass still correct");
+
+    const EngineStats now = engine->GetStats();
+    out.Line("  block cache hits/misses : " + std::to_string(now.block_cache_hits) + " / " +
+             std::to_string(now.block_cache_misses));
+    out.Line("  cache bytes             : " + std::to_string(now.block_cache_bytes));
+    checker.Check(now.block_cache_hits > after_first_pass.block_cache_hits,
+                  "second pass hits the block cache");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[4/6] look up " + std::to_string(kMissing) + " missing keys (Bloom filter)");
+  {
+    int found = 0;
+    for (int i = 0; i < kMissing; ++i) {
+      std::string value;
+      if (engine->Get("missing:" + std::to_string(i), &value).ok()) {
+        ++found;
+      }
+    }
+    out.Line("  unexpectedly found : " + std::to_string(found));
+    checker.Check(found == 0, "missing keys are rejected");
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[5/6] scan first 10 keys");
+  {
+    std::unique_ptr<Iterator> it = engine->NewIterator();
+    checker.Check(it != nullptr, "iterator available");
+    if (it != nullptr) {
+      int printed = 0;
+      std::string previous;
+      int out_of_order = 0;
+      for (it->SeekToFirst(); it->Valid() && printed < 10; it->Next()) {
+        const std::string key(it->key());
+        if (!previous.empty() && key <= previous) {
+          ++out_of_order;
+        }
+        previous = key;
+        out.Line("  " + key + " = " + std::string(it->value()));
+        ++printed;
+      }
+      checker.Check(printed == 10, "scan returned 10 entries");
+      checker.Check(out_of_order == 0, "scan output is sorted");
+      checker.Check(it->status().ok(), "scan status ok");
+    }
+  }
+  out.Line("");
+
+  // ---------------------------------------------------------------------
+  out.Line("[6/6] summary");
+  {
+    const EngineStats stats = engine->GetStats();
+    out.Line("  sstables        : " + std::to_string(stats.sstable_count));
+    out.Line("  cache hits      : " + std::to_string(stats.block_cache_hits));
+    out.Line("  cache misses    : " + std::to_string(stats.block_cache_misses));
+    out.Line("  cache bytes     : " + std::to_string(stats.block_cache_bytes));
+    checker.Check(stats.sstable_count == 1, "compaction left a single sstable");
+    checker.Check(stats.block_cache_bytes > 0, "cache is populated");
+    checker.Check(engine->Close().ok(), "final close");
+  }
+
+  out.Line("");
+  out.Separator();
+  char summary[256];
+  std::snprintf(summary, sizeof(summary), " result: %d/%d checks passed  (%s)", checker.passed(),
+                checker.checks(), checker.ok() ? "OK" : "FAILED");
+  out.Line(summary);
+  out.Separator();
+
+  const fs::path transcript_path = "demo/s4-transcript.txt";
+  const bool saved = out.Save(transcript_path);
+  std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
+              saved ? "" : " (FAILED)");
+
+  return checker.ok() ? 0 : 1;
+}
+
 }  // namespace tools
 }  // namespace minikv

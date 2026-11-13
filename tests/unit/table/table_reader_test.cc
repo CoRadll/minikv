@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "minikv/cache/lru_cache.h"
 #include "minikv/table/block.h"
 #include "minikv/table/format.h"
 #include "minikv/table/table_builder.h"
@@ -238,4 +239,24 @@ TEST(TableReader, SstableCarriesBloomFilter) {
   CHECK_TRUE(footer.filter_size > 0);
   CHECK_TRUE(footer.filter_offset < footer.index_offset);
   CHECK_TRUE(footer.filter_offset + footer.filter_size <= footer.index_offset);
+}
+
+TEST(TableReader, UsesBlockCacheOnRepeatedGets) {
+  minikv::test::TempDir dir;
+  REQUIRE_TRUE(dir.ok());
+  const auto path = BuildTable(dir.path(), 100);
+
+  std::unique_ptr<minikv::TableReader> reader;
+  REQUIRE_OK(minikv::TableReader::Open(path, &reader));
+
+  minikv::LruCache cache(1 << 20);
+  reader->SetBlockCache(&cache, 42);
+
+  std::string value;
+  CHECK_OK(reader->Get("key0000", &value, nullptr));
+  CHECK_EQ(cache.misses(), static_cast<std::uint64_t>(1));
+
+  CHECK_OK(reader->Get("key0000", &value, nullptr));  // 同一个块，应命中缓存
+  CHECK_EQ(cache.hits(), static_cast<std::uint64_t>(1));
+  CHECK_EQ(cache.misses(), static_cast<std::uint64_t>(1));
 }

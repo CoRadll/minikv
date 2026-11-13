@@ -25,6 +25,9 @@ struct Options {
 
   // L0 文件数达到该值时触发 Compaction
   std::size_t level0_compaction_trigger = 4;
+
+  // 块缓存容量（字节）。0 表示关闭缓存。
+  std::size_t block_cache_size = 8 * 1024 * 1024;
 };
 
 }  // namespace minikv

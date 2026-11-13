@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "minikv/cache/lru_cache.h"
 #include "minikv/table/bloom.h"
 #include "minikv/table/format.h"
 #include "minikv/util/coding.h"
@@ -130,12 +131,19 @@ Status TableReader::Get(std::string_view key, std::string* value, bool* deleted)
     return Status::Corruption("data block out of range");
   }
 
-  // 2) 只读命中的那一个数据块
+  // 2) 只读命中的那一个数据块（优先走缓存）
   std::string block_raw;
-  const Status read_status =
-      file_.Read(block_offset, static_cast<std::size_t>(block_size), &block_raw);
-  if (!read_status.ok()) {
-    return read_status;
+  const bool cached =
+      block_cache_ != nullptr && block_cache_->Lookup(file_number_, block_offset, &block_raw);
+  if (!cached) {
+    const Status read_status =
+        file_.Read(block_offset, static_cast<std::size_t>(block_size), &block_raw);
+    if (!read_status.ok()) {
+      return read_status;
+    }
+    if (block_cache_ != nullptr) {
+      block_cache_->Insert(file_number_, block_offset, block_raw);
+    }
   }
 
   const Block block(std::move(block_raw));
@@ -256,12 +264,20 @@ class TableReader::TableIterator final : public Iterator {
     block_index_ = index;
 
     std::string raw;
-    const Status read_status =
-        owner_->file_.Read(blocks_[index].offset, static_cast<std::size_t>(blocks_[index].size),
-                           &raw);
-    if (!read_status.ok()) {
-      status_ = read_status;
-      return;
+    const bool cached = owner_->block_cache_ != nullptr &&
+                        owner_->block_cache_->Lookup(owner_->file_number_, blocks_[index].offset,
+                                                     &raw);
+    if (!cached) {
+      const Status read_status =
+          owner_->file_.Read(blocks_[index].offset, static_cast<std::size_t>(blocks_[index].size),
+                             &raw);
+      if (!read_status.ok()) {
+        status_ = read_status;
+        return;
+      }
+      if (owner_->block_cache_ != nullptr) {
+        owner_->block_cache_->Insert(owner_->file_number_, blocks_[index].offset, raw);
+      }
     }
 
     Block block(std::move(raw));
@@ -299,6 +315,11 @@ class TableReader::TableIterator final : public Iterator {
   bool valid_ = false;
   Status status_;
 };
+
+void TableReader::SetBlockCache(LruCache* cache, std::uint64_t file_number) {
+  block_cache_ = cache;
+  file_number_ = file_number;
+}
 
 std::unique_ptr<Iterator> TableReader::NewIterator() const {
   return std::make_unique<TableIterator>(this);
