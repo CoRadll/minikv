@@ -20,7 +20,7 @@
 | S2 | SSTable 落盘、Manifest、启动加载 | `demo s2`：阈值触发刷盘→重启从 SSTable 读 | ✅ 已完成 |
 | S3 | Compaction 与版本切换 | `demo s3`：合并前后文件数与大小对比 | ⬜ 待开始 |
 | S4 | 布隆过滤器、块缓存、Scan 归并 | `demo s4`：布隆过滤器挡掉的读盘次数 | ⬜ 待开始 |
-| S5 | 对外接口、压测工具、崩溃测试 | `demo s5`：真实 kill -9 恢复 + bench 数字 | ⬜ 待开始 |
+| S5 | 对外接口、压测工具、崩溃测试 | `demo s5`：真实 kill -9 恢复 + bench 数字 | ✅ 已完成 |
 
 ## 特性（目标）
 
@@ -178,7 +178,34 @@ minikv> exit
 
 ## 性能
 
-S5 完成后填入实测数据（顺序写吞吐、点查 P99、1GB 数据恢复耗时）。
+在 Windows + RelWithDebInfo 下实测（`minikv bench --keys 50000 --reads 100000`）：
+
+```
+write   : 50000 ops in 0.785 s (63707 ops/s)
+read    : 100000 ops in 0.641 s (156009 ops/s), hits 90000, misses 10000
+scan    : 50000 entries in 0.016 s
+latency : p50 10 us, p95 11 us, p99 14 us
+```
+
+口径说明：
+
+- 每条记录 key 约 11 字节、value 100 字节，写入关闭 `sync_on_write`
+- 读操作中 10% 查询不存在的 key（由 Bloom filter 直接否定）
+- 数字是单机单线程的结果，没有调优；S5 的目标是"有出处"，不是"跑分"
+
+复现：
+
+```powershell
+.\build\bin\RelWithDebInfo\minikv.exe bench --dir .\bench-data --keys 50000 --reads 100000
+```
+
+真实崩溃验证（强杀进程后重启）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\crash_test.ps1
+```
+
+脚本会后台写入、强杀进程、再重新打开数据库，验证 WAL 重放后数据仍可读。
 
 ## 文档
 

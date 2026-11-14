@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 
+#include "bench.h"
 #include "minikv/api/engine.h"
 #include "minikv/api/options.h"
 #include "minikv/api/version.h"
@@ -30,6 +31,7 @@ int RunDemoS1(const std::string& db_dir);
 int RunDemoS2(const std::string& db_dir);
 int RunDemoS3(const std::string& db_dir);
 int RunDemoS4(const std::string& db_dir);
+int RunDemoS5(const std::string& db_dir);
 }  // namespace tools
 }  // namespace minikv
 
@@ -37,7 +39,7 @@ namespace {
 
 void PrintUsage() {
   std::printf("usage: minikv [--dir <path>] [--verbose] [--help] [--version]\n");
-  std::printf("       minikv demo <s1|s2|s3|s4> [--dir <path>]\n");
+  std::printf("       minikv demo <s1|s2|s3|s4|s5> [--dir <path>]\n");
   std::printf("\n");
   std::printf("commands:\n");
   std::printf("  put <key> <value>   write or overwrite a key\n");
@@ -78,11 +80,64 @@ bool SplitFirstToken(const std::string& line, std::string* head, std::string* re
 }  // namespace
 
 int main(int argc, char** argv) {
-  // 子命令：minikv demo <s1|s2> [--dir <path>]
+  // 子命令：minikv bench [--dir <path>] [--keys N] [--reads M] [--sync]
+  if (argc >= 2 && std::string_view(argv[1]) == "bench") {
+    std::string bench_dir = "bench-data";
+    int keys = 20000;
+    int reads = 50000;
+    bool bench_sync = false;
+
+    for (int i = 2; i < argc; ++i) {
+      const std::string_view arg(argv[i]);
+      if (arg == "--dir" && i + 1 < argc) {
+        bench_dir = argv[++i];
+      } else if (arg == "--keys" && i + 1 < argc) {
+        keys = std::atoi(argv[++i]);
+      } else if (arg == "--reads" && i + 1 < argc) {
+        reads = std::atoi(argv[++i]);
+      } else if (arg == "--sync") {
+        bench_sync = true;
+      } else {
+        std::fprintf(stderr, "unknown bench argument: %.*s\n", static_cast<int>(arg.size()),
+                     arg.data());
+        return 2;
+      }
+    }
+
+    minikv::SetLogLevel(minikv::LogLevel::kWarn);
+    minikv::Options options;
+    options.db_path = bench_dir;
+    options.sync_on_write = bench_sync;
+
+    const minikv::tools::BenchResult result = minikv::tools::RunBenchmark(options, keys, reads);
+    if (!result.ok) {
+      std::fprintf(stderr, "benchmark failed\n");
+      return 1;
+    }
+
+    const double write_rate = static_cast<double>(result.key_count) / result.write_seconds;
+    const double read_rate = static_cast<double>(result.read_count) / result.read_seconds;
+    std::printf("db      : %s (sync = %s)\n", bench_dir.c_str(), bench_sync ? "on" : "off");
+    std::printf("write   : %llu ops in %.3f s (%.0f ops/s)\n",
+                static_cast<unsigned long long>(result.key_count), result.write_seconds, write_rate);
+    std::printf("read    : %llu ops in %.3f s (%.0f ops/s), hits %llu, misses %llu\n",
+                static_cast<unsigned long long>(result.read_count), result.read_seconds, read_rate,
+                static_cast<unsigned long long>(result.read_hits),
+                static_cast<unsigned long long>(result.read_misses));
+    std::printf("scan    : %llu entries in %.3f s\n",
+                static_cast<unsigned long long>(result.scan_entries), result.scan_seconds);
+    std::printf("latency : p50 %llu us, p95 %llu us, p99 %llu us\n",
+                static_cast<unsigned long long>(result.latency_p50_us),
+                static_cast<unsigned long long>(result.latency_p95_us),
+                static_cast<unsigned long long>(result.latency_p99_us));
+    return 0;
+  }
+
+  // 子命令：minikv demo <s1|s2|s3|s4|s5> [--dir <path>]
   if (argc >= 2 && std::string_view(argv[1]) == "demo") {
     const std::string phase = (argc >= 3) ? std::string(argv[2]) : std::string();
-    if (phase != "s1" && phase != "s2" && phase != "s3" && phase != "s4") {
-      std::fprintf(stderr, "unknown demo phase: %s (supported: s1, s2, s3, s4)\n",
+    if (phase != "s1" && phase != "s2" && phase != "s3" && phase != "s4" && phase != "s5") {
+      std::fprintf(stderr, "unknown demo phase: %s (supported: s1, s2, s3, s4, s5)\n",
                    phase.empty() ? "<none>" : phase.c_str());
       return 2;
     }
@@ -107,7 +162,10 @@ int main(int argc, char** argv) {
     if (phase == "s3") {
       return minikv::tools::RunDemoS3(demo_dir);
     }
-    return minikv::tools::RunDemoS4(demo_dir);
+    if (phase == "s4") {
+      return minikv::tools::RunDemoS4(demo_dir);
+    }
+    return minikv::tools::RunDemoS5(demo_dir);
   }
 
   std::string db_path = "data";

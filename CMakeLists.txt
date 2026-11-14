@@ -114,6 +114,7 @@ minikv_set_sanitizers(minikv_header_check)
 # ---------------------------------------------------------------------------
 add_executable(minikv
   src/tools/minikv_cli.cc
+  src/tools/minikv_bench.cc
   src/tools/minikv_demo.cc)
 target_link_libraries(minikv PRIVATE minikv_core)
 minikv_set_warnings(minikv)

@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "bench.h"
 #include "minikv/api/engine.h"
 #include "minikv/api/options.h"
 #include "minikv/api/version.h"
@@ -923,6 +924,148 @@ int RunDemoS4(const std::string& db_dir) {
   out.Separator();
 
   const fs::path transcript_path = "demo/s4-transcript.txt";
+  const bool saved = out.Save(transcript_path);
+  std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
+              saved ? "" : " (FAILED)");
+
+  return checker.ok() ? 0 : 1;
+}
+
+int RunDemoS5(const std::string& db_dir) {
+  SetLogSink([](const std::string&) {});
+
+  Transcript out;
+  Checker checker(out);
+
+  const fs::path db_path(db_dir);
+  out.Separator();
+  out.Line(" MiniKV S5 Demo - benchmark and crash recovery");
+  out.Line(" data dir : " + db_path.string());
+  out.Separator();
+  out.Line("");
+
+  std::error_code ec;
+  fs::remove_all(db_path, ec);
+
+  constexpr int kKeys = 2000;
+  constexpr int kReads = 5000;
+
+  out.Line("[1/5] run benchmark (" + std::to_string(kKeys) + " keys, " +
+           std::to_string(kReads) + " reads)");
+  Options options;
+  options.db_path = db_path;
+  options.sync_on_write = false;
+
+  const BenchResult result = RunBenchmark(options, kKeys, kReads);
+  checker.Check(result.ok, "benchmark completed");
+
+  out.Line("  write ops   : " + std::to_string(result.key_count));
+  out.Line("  read ops    : " + std::to_string(result.read_count) + " (hits " +
+           std::to_string(result.read_hits) + ", misses " + std::to_string(result.read_misses) +
+           ")");
+  out.Line("  scan entries: " + std::to_string(result.scan_entries));
+  out.Line("");
+
+  out.Line("[2/5] verify benchmark invariants");
+  {
+    checker.Check(result.write_seconds > 0.0, "write phase is measurable");
+    checker.Check(result.read_seconds > 0.0, "read phase is measurable");
+    checker.Check(result.scan_seconds > 0.0, "scan phase is measurable");
+
+    checker.Check(result.read_hits + result.read_misses == result.read_count,
+                  "every read is accounted for");
+    checker.Check(result.read_misses == static_cast<std::uint64_t>(kReads / 10),
+                  "10% of reads target absent keys");
+    checker.Check(result.scan_entries == result.key_count, "scan visits every key");
+
+    checker.Check(result.latency_p50_us <= result.latency_p95_us, "p50 <= p95");
+    checker.Check(result.latency_p95_us <= result.latency_p99_us, "p95 <= p99");
+    checker.Check(result.latency_p99_us > 0, "p99 is measurable");
+  }
+  out.Line("  counts, hit ratio and latency order are consistent");
+  out.Line("");
+
+  out.Line("[3/5] reopen and sample keys");
+  {
+    std::unique_ptr<Engine> engine;
+    const Status status = Engine::Open(options, &engine);
+    checker.Check(status.ok(), "reopen: " + status.ToString());
+    if (status.ok()) {
+      int missing = 0;
+      int wrong_size = 0;
+      for (int i = 0; i < 20; ++i) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "key%08d", i);
+        std::string value;
+        if (!engine->Get(key, &value).ok()) {
+          ++missing;
+        } else if (value.size() != 100) {
+          ++wrong_size;
+        }
+      }
+      out.Line("  sampled 20 keys, missing = " + std::to_string(missing) +
+               ", wrong value size = " + std::to_string(wrong_size));
+      checker.Check(missing == 0, "sampled keys survive restart");
+      checker.Check(wrong_size == 0, "values have the expected size");
+      checker.Check(engine->Close().ok(), "close");
+    }
+  }
+  out.Line("");
+
+  out.Line("[4/5] crash recovery (process killed with data in WAL)");
+  {
+    // 模拟"写入后进程被杀"：打开数据库写入，然后不调用 Close 直接释放对象
+    Options crash_options = options;
+    crash_options.sync_on_write = true;
+
+    {
+      std::unique_ptr<Engine> engine;
+      const Status status = Engine::Open(crash_options, &engine);
+      checker.Check(status.ok(), "open before crash");
+      if (status.ok()) {
+        for (int i = 0; i < 50; ++i) {
+          checker.Check(engine->Put("crash:" + std::to_string(i), "v").ok(),
+                        "write before crash");
+        }
+        // 关键：不调用 Close，直接丢弃（相当于进程被强杀，WAL 已落盘）
+        engine.release();
+      }
+    }
+
+    std::unique_ptr<Engine> reopened;
+    const Status status = Engine::Open(options, &reopened);
+    checker.Check(status.ok(), "reopen after crash");
+    if (status.ok()) {
+      int lost = 0;
+      for (int i = 0; i < 50; ++i) {
+        std::string value;
+        if (!reopened->Get("crash:" + std::to_string(i), &value).ok()) {
+          ++lost;
+        }
+      }
+      out.Line("  50 keys written before crash, lost = " + std::to_string(lost));
+      checker.Check(lost == 0, "fsync'd writes survive a crash");
+      checker.Check(reopened->Close().ok(), "close after recovery");
+    }
+  }
+  out.Line("");
+
+  out.Line("[5/5] summary");
+  {
+    out.Line("  keys written : " + std::to_string(result.key_count));
+    out.Line("  reads        : " + std::to_string(result.read_count));
+    out.Line("  scan entries : " + std::to_string(result.scan_entries));
+  }
+
+  out.Line("");
+  out.Separator();
+  char summary[256];
+  std::snprintf(summary, sizeof(summary), " result: %d/%d checks passed  (%s)", checker.passed(),
+                checker.checks(), checker.ok() ? "OK" : "FAILED");
+  out.Line(summary);
+  out.Separator();
+
+  const fs::path transcript_path = "demo/s5-transcript.txt";
   const bool saved = out.Save(transcript_path);
   std::printf("\ntranscript written to %s%s\n", transcript_path.string().c_str(),
               saved ? "" : " (FAILED)");
