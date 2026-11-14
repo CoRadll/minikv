@@ -117,6 +117,11 @@ add_executable(minikv
   src/tools/minikv_bench.cc
   src/tools/minikv_demo.cc)
 target_link_libraries(minikv PRIVATE minikv_core)
+
+# 作为库使用的示例程序（不影响其他目标）
+add_executable(minikv_example examples/embedded_demo.cc)
+target_link_libraries(minikv_example PRIVATE minikv_core)
+minikv_set_warnings(minikv_example)
 minikv_set_warnings(minikv)
 minikv_set_sanitizers(minikv)
 
